@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutGrid, Package, ClipboardList, Users, Tag, Settings, Wallet, Truck, UserCog, Headphones, LogOut } from "lucide-react";
+import { LayoutGrid, Package, ClipboardList, Users, Tag, Settings, Wallet, Truck, UserCog, Headphones, Shield, LogOut } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const NAV_ITEMS = [
@@ -14,6 +14,7 @@ const NAV_ITEMS = [
   { href: "/sac", label: "SAC", icon: Headphones },
   { href: "/financeiro", label: "Financeiro", icon: Wallet },
   { href: "/rh", label: "RH", icon: UserCog },
+  { href: "/ti", label: "TI", icon: Shield },
   { href: "/cupons", label: "Cupons", icon: Tag },
   { href: "/configuracoes", label: "Configurações", icon: Settings },
 ];
