@@ -5,7 +5,7 @@ import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import TransactionDetailModal from "../../components/TransactionDetailModal";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers } from "lucide-react";
+import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info } from "lucide-react";
 
 function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
@@ -13,9 +13,16 @@ function todayDateInput() {
 function currentMonthInput() {
   return new Date().toISOString().slice(0, 7);
 }
+function currentYear() {
+  return new Date().getFullYear();
+}
+function lastDayOfMonth(yyyyMM) {
+  const [y, m] = yyyyMM.split("-").map(Number);
+  return new Date(y, m, 0).toISOString().slice(0, 10);
+}
 
 function FinanceiroContent() {
-  const [tab, setTab] = useState("contas"); // contas | caixa
+  const [tab, setTab] = useState("contas"); // contas | caixa | dre
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [detailTransaction, setDetailTransaction] = useState(null);
@@ -31,6 +38,16 @@ function FinanceiroContent() {
   const [caixaMonth, setCaixaMonth] = useState(currentMonthInput());
   const [caixaTypeFilter, setCaixaTypeFilter] = useState("todos");
   const [caixaCategoryFilter, setCaixaCategoryFilter] = useState("todos");
+
+  // Filtros — DRE
+  const [drePeriodType, setDrePeriodType] = useState("mensal"); // mensal | anual | personalizado
+  const [dreMonth, setDreMonth] = useState(currentMonthInput());
+  const [dreYear, setDreYear] = useState(String(currentYear()));
+  const [dreStart, setDreStart] = useState(todayDateInput());
+  const [dreEnd, setDreEnd] = useState(todayDateInput());
+  const [dreRegime, setDreRegime] = useState("competencia"); // caixa | competencia
+  const [dreLoading, setDreLoading] = useState(false);
+  const [dreData, setDreData] = useState(null);
 
   const [showForm, setShowForm] = useState(false);
   const [type, setType] = useState("entrada");
@@ -70,9 +87,7 @@ function FinanceiroContent() {
   }
 
   async function handleBaixaIndividual(id) {
-    await supabase.from("financial_transactions")
-      .update({ status: "baixado", payment_date: todayDateInput() })
-      .eq("id", id);
+    await supabase.from("financial_transactions").update({ status: "baixado", payment_date: todayDateInput() }).eq("id", id);
     loadTransactions();
   }
 
@@ -93,7 +108,6 @@ function FinanceiroContent() {
   const today = todayDateInput();
   const isOverdue = (t) => t.status === "pendente" && t.due_date < today;
 
-  // ── Dados da aba Contas ──
   const contasFiltered = transactions
     .filter((t) => typeFilter === "todos" || t.type === typeFilter)
     .filter((t) => statusFilter === "todos" || t.status === statusFilter)
@@ -105,7 +119,6 @@ function FinanceiroContent() {
   const overdueCount = transactions.filter(isOverdue).length;
   const selectedTotal = transactions.filter((t) => selectedIds.includes(t.id)).reduce((s, t) => s + Number(t.amount), 0);
 
-  // ── Dados da aba Caixa ──
   const caixaFiltered = transactions
     .filter((t) => t.status === "baixado")
     .filter((t) => t.payment_date && t.payment_date.startsWith(caixaMonth))
@@ -116,28 +129,109 @@ function FinanceiroContent() {
   const caixaDespesas = caixaFiltered.filter((t) => t.type === "saida").reduce((s, t) => s + Number(t.amount), 0);
   const caixaSaldo = caixaReceitas - caixaDespesas;
 
+  // ── Cálculo da DRE ──
+  function getDrePeriodRange() {
+    if (drePeriodType === "mensal") return { start: `${dreMonth}-01`, end: lastDayOfMonth(dreMonth) };
+    if (drePeriodType === "anual") return { start: `${dreYear}-01-01`, end: `${dreYear}-12-31` };
+    return { start: dreStart, end: dreEnd };
+  }
+
+  async function calculateDRE() {
+    setDreLoading(true);
+    const { start, end } = getDrePeriodRange();
+
+    let query = supabase.from("financial_transactions").select("*");
+    if (dreRegime === "caixa") {
+      query = query.eq("status", "baixado").gte("payment_date", start).lte("payment_date", end);
+    } else {
+      query = query.gte("due_date", start).lte("due_date", end);
+    }
+    const { data: periodTransactions } = await query;
+    const txs = periodTransactions || [];
+
+    const receitaVendaTxs = txs.filter((t) => t.type === "entrada" && t.category === "RECEITA DE VENDA");
+    const outrasReceitasTxs = txs.filter((t) => t.type === "entrada" && t.category !== "RECEITA DE VENDA");
+    const despesasTxs = txs.filter((t) => t.type === "saida");
+
+    const receitaVendas = receitaVendaTxs.reduce((s, t) => s + Number(t.amount), 0);
+    const outrasReceitas = outrasReceitasTxs.reduce((s, t) => s + Number(t.amount), 0);
+    const totalDespesas = despesasTxs.reduce((s, t) => s + Number(t.amount), 0);
+
+    // Agrupa despesas por categoria
+    const despesasPorCategoria = {};
+    despesasTxs.forEach((t) => {
+      const cat = t.category || "Sem categoria";
+      despesasPorCategoria[cat] = (despesasPorCategoria[cat] || 0) + Number(t.amount);
+    });
+
+    // Calcula o CMV: busca os pedidos ligados às receitas de venda do período,
+    // pega os itens vendidos e multiplica pela "Valor de Compra" de cada produto
+    let cmv = 0;
+    const orderIds = [...new Set(receitaVendaTxs.map((t) => t.order_id).filter(Boolean))];
+
+    if (orderIds.length > 0) {
+      const { data: items } = await supabase
+        .from("order_items")
+        .select("product_id, quantity, order_id")
+        .in("order_id", orderIds);
+
+      const productIds = [...new Set((items || []).map((i) => i.product_id).filter(Boolean))];
+      const { data: products } = await supabase
+        .from("products")
+        .select("id, cost_price")
+        .in("id", productIds);
+
+      const costMap = {};
+      (products || []).forEach((p) => { costMap[p.id] = Number(p.cost_price) || 0; });
+
+      cmv = (items || []).reduce((sum, item) => sum + (costMap[item.product_id] || 0) * item.quantity, 0);
+    }
+
+    const lucroBruto = receitaVendas - cmv;
+    const resultado = lucroBruto + outrasReceitas - totalDespesas;
+
+    setDreData({
+      start, end, receitaVendas, cmv, lucroBruto, outrasReceitas,
+      totalDespesas, despesasPorCategoria, resultado,
+      margemBruta: receitaVendas > 0 ? (lucroBruto / receitaVendas) * 100 : null,
+      margemLiquida: receitaVendas > 0 ? (resultado / receitaVendas) * 100 : null,
+      vendasCount: receitaVendaTxs.length,
+    });
+    setDreLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "dre") calculateDRE();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, drePeriodType, dreMonth, dreYear, dreStart, dreEnd, dreRegime]);
+
+  function fmt(v) {
+    return `R$ ${Number(v).toFixed(2).replace(".", ",")}`;
+  }
+
   return (
     <div>
       <Sidebar />
       <div style={styles.content}>
         <h1 style={styles.title}>Financeiro</h1>
-        <p style={styles.subtitle}>Contas a pagar/receber e controle de caixa</p>
+        <p style={styles.subtitle}>Contas a pagar/receber, caixa e resultado do período</p>
 
         <div style={styles.tabs}>
           <button onClick={() => setTab("contas")} style={{ ...styles.tabButton, ...(tab === "contas" ? styles.tabActive : {}) }}>Contas a Pagar/Receber</button>
           <button onClick={() => setTab("caixa")} style={{ ...styles.tabButton, ...(tab === "caixa" ? styles.tabActive : {}) }}>Caixa</button>
+          <button onClick={() => setTab("dre")} style={{ ...styles.tabButton, ...(tab === "dre" ? styles.tabActive : {}) }}>DRE</button>
         </div>
 
-        {tab === "contas" ? (
+        {tab === "contas" && (
           <>
             <div style={styles.statsRow}>
               <div style={styles.statCard}>
                 <div style={{ ...styles.statIcon, background: "#f0fdf4" }}><TrendingUp size={16} color="#16a34a" /></div>
-                <div><div style={styles.statValue}>R$ {aReceber.toFixed(2).replace(".", ",")}</div><div style={styles.statLabel}>A receber</div></div>
+                <div><div style={styles.statValue}>{fmt(aReceber)}</div><div style={styles.statLabel}>A receber</div></div>
               </div>
               <div style={styles.statCard}>
                 <div style={{ ...styles.statIcon, background: "#fef2f2" }}><TrendingDown size={16} color="#dc2626" /></div>
-                <div><div style={styles.statValue}>R$ {aPagar.toFixed(2).replace(".", ",")}</div><div style={styles.statLabel}>A pagar</div></div>
+                <div><div style={styles.statValue}>{fmt(aPagar)}</div><div style={styles.statLabel}>A pagar</div></div>
               </div>
               {overdueCount > 0 && (
                 <div style={{ ...styles.statCard, ...styles.statCardAlert }}>
@@ -151,7 +245,7 @@ function FinanceiroContent() {
               <button onClick={() => setShowForm((v) => !v)} style={styles.newButton}><Plus size={16} /> Novo lançamento</button>
               {selectedIds.length > 0 && (
                 <button onClick={handleBaixaEmLote} style={styles.batchButton}>
-                  <Layers size={14} /> Dar baixa em {selectedIds.length} conta(s) — R$ {selectedTotal.toFixed(2).replace(".", ",")}
+                  <Layers size={14} /> Dar baixa em {selectedIds.length} conta(s) — {fmt(selectedTotal)}
                 </button>
               )}
             </div>
@@ -239,12 +333,12 @@ function FinanceiroContent() {
                             </button>
                           )}
                         </td>
-                        <td style={styles.td} onClick={() => setDetailTransaction(t)}>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => setDetailTransaction(t)}>
                           <span style={{ ...styles.typeBadge, ...(t.type === "entrada" ? styles.typeIn : styles.typeOut) }}>{t.type === "entrada" ? "Entrada" : "Saída"}</span>
                         </td>
                         <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => setDetailTransaction(t)}>{t.description}</td>
                         <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => setDetailTransaction(t)}>{t.category || "—"}</td>
-                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => setDetailTransaction(t)}>{t.type === "entrada" ? "+" : "-"}R$ {Number(t.amount).toFixed(2).replace(".", ",")}</td>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => setDetailTransaction(t)}>{t.type === "entrada" ? "+" : "-"}{fmt(t.amount)}</td>
                         <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => setDetailTransaction(t)}>
                           {new Date(t.due_date + "T00:00:00").toLocaleDateString("pt-BR")}
                           {isOverdue(t) && <span style={styles.overdueTag}> · Atrasado</span>}
@@ -266,7 +360,9 @@ function FinanceiroContent() {
               </div>
             )}
           </>
-        ) : (
+        )}
+
+        {tab === "caixa" && (
           <>
             <div style={styles.filters}>
               <input type="month" value={caixaMonth} onChange={(e) => setCaixaMonth(e.target.value)} style={styles.filterInput} />
@@ -284,15 +380,15 @@ function FinanceiroContent() {
             <div style={styles.statsRow}>
               <div style={styles.statCard}>
                 <div style={{ ...styles.statIcon, background: "#f0fdf4" }}><TrendingUp size={16} color="#16a34a" /></div>
-                <div><div style={styles.statValue}>R$ {caixaReceitas.toFixed(2).replace(".", ",")}</div><div style={styles.statLabel}>Receitas do mês</div></div>
+                <div><div style={styles.statValue}>{fmt(caixaReceitas)}</div><div style={styles.statLabel}>Receitas do mês</div></div>
               </div>
               <div style={styles.statCard}>
                 <div style={{ ...styles.statIcon, background: "#fef2f2" }}><TrendingDown size={16} color="#dc2626" /></div>
-                <div><div style={styles.statValue}>R$ {caixaDespesas.toFixed(2).replace(".", ",")}</div><div style={styles.statLabel}>Despesas do mês</div></div>
+                <div><div style={styles.statValue}>{fmt(caixaDespesas)}</div><div style={styles.statLabel}>Despesas do mês</div></div>
               </div>
               <div style={styles.statCard}>
                 <div style={{ ...styles.statIcon, background: caixaSaldo >= 0 ? "#f0fdf4" : "#fef2f2" }}><Wallet size={16} color={caixaSaldo >= 0 ? "#16a34a" : "#dc2626"} /></div>
-                <div><div style={{ ...styles.statValue, color: caixaSaldo >= 0 ? "#16a34a" : "#dc2626" }}>R$ {caixaSaldo.toFixed(2).replace(".", ",")}</div><div style={styles.statLabel}>Saldo do mês</div></div>
+                <div><div style={{ ...styles.statValue, color: caixaSaldo >= 0 ? "#16a34a" : "#dc2626" }}>{fmt(caixaSaldo)}</div><div style={styles.statLabel}>Saldo do mês</div></div>
               </div>
             </div>
 
@@ -320,12 +416,103 @@ function FinanceiroContent() {
                         <td style={styles.td}><span style={{ ...styles.typeBadge, ...(t.type === "entrada" ? styles.typeIn : styles.typeOut) }}>{t.type === "entrada" ? "Entrada" : "Saída"}</span></td>
                         <td style={styles.td}>{t.description}</td>
                         <td style={styles.td}>{t.category || "—"}</td>
-                        <td style={styles.td}>{t.type === "entrada" ? "+" : "-"}R$ {Number(t.amount).toFixed(2).replace(".", ",")}</td>
+                        <td style={styles.td}>{t.type === "entrada" ? "+" : "-"}{fmt(t.amount)}</td>
                         <td style={styles.td}>{t.settlement_group_id ? <span style={styles.groupTag}>Em lote</span> : "—"}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+              </div>
+            )}
+          </>
+        )}
+
+        {tab === "dre" && (
+          <>
+            <div style={styles.filters}>
+              <select value={drePeriodType} onChange={(e) => setDrePeriodType(e.target.value)} style={styles.filterInput}>
+                <option value="mensal">Mensal</option>
+                <option value="anual">Anual</option>
+                <option value="personalizado">Período personalizado</option>
+              </select>
+
+              {drePeriodType === "mensal" && (
+                <input type="month" value={dreMonth} onChange={(e) => setDreMonth(e.target.value)} style={styles.filterInput} />
+              )}
+              {drePeriodType === "anual" && (
+                <input type="number" value={dreYear} onChange={(e) => setDreYear(e.target.value)} style={{ ...styles.filterInput, width: 100 }} placeholder="Ano" />
+              )}
+              {drePeriodType === "personalizado" && (
+                <>
+                  <input type="date" value={dreStart} onChange={(e) => setDreStart(e.target.value)} style={styles.filterInput} />
+                  <input type="date" value={dreEnd} onChange={(e) => setDreEnd(e.target.value)} style={styles.filterInput} />
+                </>
+              )}
+
+              <select value={dreRegime} onChange={(e) => setDreRegime(e.target.value)} style={styles.filterInput}>
+                <option value="competencia">Regime de Competência</option>
+                <option value="caixa">Regime de Caixa</option>
+              </select>
+            </div>
+
+            <p style={styles.dreExplainer}>
+              <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              {dreRegime === "competencia"
+                ? "Competência: conta tudo que venceu no período, mesmo que ainda não tenha sido pago ou recebido."
+                : "Caixa: conta só o que já foi efetivamente baixado (dinheiro que realmente entrou ou saiu) no período."}
+            </p>
+
+            {dreLoading || !dreData ? (
+              <p style={styles.empty}>Calculando…</p>
+            ) : (
+              <div style={styles.dreCard}>
+                <div style={styles.dreRow}>
+                  <span style={styles.dreLabel}>Receita de Vendas</span>
+                  <span style={styles.dreValue}>{fmt(dreData.receitaVendas)}</span>
+                </div>
+                <p style={styles.dreNote}>{dreData.vendasCount} venda(s) considerada(s) no período</p>
+
+                <div style={styles.dreRow}>
+                  <span style={styles.dreLabelMinus}>(-) Custo dos Produtos Vendidos (CMV)</span>
+                  <span style={styles.dreValueMinus}>{fmt(dreData.cmv)}</span>
+                </div>
+
+                <div style={{ ...styles.dreRow, ...styles.dreSubtotal }}>
+                  <span style={styles.dreLabelBold}>= Lucro Bruto</span>
+                  <span style={styles.dreValueBold}>
+                    {fmt(dreData.lucroBruto)}
+                    {dreData.margemBruta !== null && <span style={styles.dreMargin}> ({dreData.margemBruta.toFixed(1)}%)</span>}
+                  </span>
+                </div>
+
+                <div style={styles.dreRow}>
+                  <span style={styles.dreLabel}>(+) Outras Receitas</span>
+                  <span style={styles.dreValue}>{fmt(dreData.outrasReceitas)}</span>
+                </div>
+
+                <div style={styles.dreRow}>
+                  <span style={styles.dreLabelMinus}>(-) Despesas</span>
+                  <span style={styles.dreValueMinus}>{fmt(dreData.totalDespesas)}</span>
+                </div>
+
+                {Object.keys(dreData.despesasPorCategoria).length > 0 && (
+                  <div style={styles.despesasBreakdown}>
+                    {Object.entries(dreData.despesasPorCategoria).map(([cat, val]) => (
+                      <div key={cat} style={styles.despesaItem}>
+                        <span>{cat}</span>
+                        <span>{fmt(val)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ ...styles.dreRow, ...styles.dreFinal, ...(dreData.resultado >= 0 ? styles.dreFinalPositive : styles.dreFinalNegative) }}>
+                  <span style={styles.dreLabelFinal}>= Resultado do Período ({dreData.resultado >= 0 ? "Lucro" : "Prejuízo"})</span>
+                  <span style={styles.dreValueFinal}>
+                    {fmt(dreData.resultado)}
+                    {dreData.margemLiquida !== null && <span style={styles.dreMarginFinal}> ({dreData.margemLiquida.toFixed(1)}%)</span>}
+                  </span>
+                </div>
               </div>
             )}
           </>
@@ -386,4 +573,24 @@ const styles = {
   badgePending: { background: "#f0f0f0", color: "#737373" },
   baixaButton: { border: "1px solid #e5e5e5", background: "#fff", borderRadius: 8, padding: "6px 10px", fontSize: 11.5, fontWeight: 600, cursor: "pointer" },
   groupTag: { fontSize: 10.5, fontWeight: 700, background: "#dbeafe", color: "#2563eb", borderRadius: 999, padding: "2px 8px" },
+  dreExplainer: { display: "flex", gap: 6, fontSize: 12, color: "#737373", background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", marginBottom: 18 },
+  dreCard: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 16, padding: "20px 24px", maxWidth: 620 },
+  dreRow: { display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "8px 0" },
+  dreLabel: { fontSize: 14, color: "#171717" },
+  dreValue: { fontSize: 14, fontWeight: 700, color: "#16a34a" },
+  dreLabelMinus: { fontSize: 14, color: "#525252" },
+  dreValueMinus: { fontSize: 14, fontWeight: 700, color: "#dc2626" },
+  dreLabelBold: { fontSize: 15, fontWeight: 800, color: "#171717" },
+  dreValueBold: { fontSize: 15, fontWeight: 800, color: "#171717" },
+  dreSubtotal: { borderTop: "1px solid #e5e5e5", borderBottom: "1px solid #e5e5e5", margin: "6px 0" },
+  dreMargin: { fontSize: 12, color: "#a3a3a3", fontWeight: 500 },
+  dreNote: { fontSize: 11, color: "#a3a3a3", marginTop: -4, marginBottom: 4 },
+  despesasBreakdown: { background: "#fafafa", borderRadius: 10, padding: "8px 14px", margin: "4px 0 8px" },
+  despesaItem: { display: "flex", justifyContent: "space-between", fontSize: 12, color: "#737373", padding: "4px 0" },
+  dreFinal: { borderRadius: 12, padding: "14px 16px", marginTop: 10 },
+  dreFinalPositive: { background: "#f0fdf4" },
+  dreFinalNegative: { background: "#fef2f2" },
+  dreLabelFinal: { fontSize: 15, fontWeight: 800, color: "#171717" },
+  dreValueFinal: { fontSize: 19, fontWeight: 800, color: "#171717" },
+  dreMarginFinal: { fontSize: 13, color: "#737373", fontWeight: 600 },
 };
