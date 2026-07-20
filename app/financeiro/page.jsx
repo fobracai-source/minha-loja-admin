@@ -4,8 +4,9 @@ import { useEffect, useMemo, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import TransactionDetailModal from "../../components/TransactionDetailModal";
+import BreakEvenChart from "../../components/BreakEvenChart";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info } from "lucide-react";
+import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale } from "lucide-react";
 
 function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
@@ -49,6 +50,17 @@ function FinanceiroContent() {
   const [dreLoading, setDreLoading] = useState(false);
   const [dreData, setDreData] = useState(null);
 
+  // Filtros e dados — Ponto de Equilíbrio
+  const [pePeriodType, setPePeriodType] = useState("mensal");
+  const [peMonth, setPeMonth] = useState(currentMonthInput());
+  const [peYear, setPeYear] = useState(String(currentYear()));
+  const [peStart, setPeStart] = useState(todayDateInput());
+  const [peEnd, setPeEnd] = useState(todayDateInput());
+  const [desiredProfit, setDesiredProfit] = useState("");
+  const [expenseCategoryTypes, setExpenseCategoryTypes] = useState({}); // { categoria: 'fixo'|'variavel' }
+  const [peLoading, setPeLoading] = useState(false);
+  const [peData, setPeData] = useState(null);
+
   const [showForm, setShowForm] = useState(false);
   const [type, setType] = useState("entrada");
   const [description, setDescription] = useState("");
@@ -64,8 +76,21 @@ function FinanceiroContent() {
     setLoading(false);
   }
 
+  async function loadExpenseCategoryTypes() {
+    const { data } = await supabase.from("expense_category_types").select("*");
+    const map = {};
+    (data || []).forEach((row) => { map[row.category] = row.cost_type; });
+    setExpenseCategoryTypes(map);
+  }
+
+  async function handleSetCategoryType(cat, costType) {
+    setExpenseCategoryTypes((prev) => ({ ...prev, [cat]: costType }));
+    await supabase.from("expense_category_types").upsert({ category: cat, cost_type: costType, updated_at: new Date().toISOString() });
+  }
+
   useEffect(() => {
     loadTransactions();
+    loadExpenseCategoryTypes();
   }, []);
 
   const categories = useMemo(
@@ -205,6 +230,78 @@ function FinanceiroContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, drePeriodType, dreMonth, dreYear, dreStart, dreEnd, dreRegime]);
 
+  // ── Cálculo do Ponto de Equilíbrio ──
+  function getPePeriodRange() {
+    if (pePeriodType === "mensal") return { start: `${peMonth}-01`, end: lastDayOfMonth(peMonth) };
+    if (pePeriodType === "anual") return { start: `${peYear}-01-01`, end: `${peYear}-12-31` };
+    return { start: peStart, end: peEnd };
+  }
+
+  async function calculatePontoEquilibrio() {
+    setPeLoading(true);
+    const { start, end } = getPePeriodRange();
+
+    const { data: periodTransactions } = await supabase
+      .from("financial_transactions")
+      .select("*")
+      .gte("due_date", start)
+      .lte("due_date", end);
+
+    const txs = periodTransactions || [];
+    const receitaVendaTxs = txs.filter((t) => t.type === "entrada" && t.category === "RECEITA DE VENDA");
+    const despesasTxs = txs.filter((t) => t.type === "saida");
+
+    const receitaTotal = receitaVendaTxs.reduce((s, t) => s + Number(t.amount), 0);
+
+    // CMV (mesmo cálculo da DRE) — é sempre custo variável
+    let cmv = 0;
+    const orderIds = [...new Set(receitaVendaTxs.map((t) => t.order_id).filter(Boolean))];
+    if (orderIds.length > 0) {
+      const { data: items } = await supabase.from("order_items").select("product_id, quantity, order_id").in("order_id", orderIds);
+      const productIds = [...new Set((items || []).map((i) => i.product_id).filter(Boolean))];
+      const { data: products } = await supabase.from("products").select("id, cost_price").in("id", productIds);
+      const costMap = {};
+      (products || []).forEach((p) => { costMap[p.id] = Number(p.cost_price) || 0; });
+      cmv = (items || []).reduce((sum, item) => sum + (costMap[item.product_id] || 0) * item.quantity, 0);
+    }
+
+    // Despesas do período separadas por classificação (fixo/variável)
+    let despesasFixas = 0;
+    let despesasVariaveis = 0;
+    despesasTxs.forEach((t) => {
+      const cat = t.category || "Sem categoria";
+      const costType = expenseCategoryTypes[cat] || "variavel";
+      if (costType === "fixo") despesasFixas += Number(t.amount);
+      else despesasVariaveis += Number(t.amount);
+    });
+
+    const custosVariaveisTotais = cmv + despesasVariaveis;
+    const custosFixosTotais = despesasFixas;
+
+    const margemContribuicao = receitaTotal - custosVariaveisTotais;
+    const margemContribuicaoPct = receitaTotal > 0 ? margemContribuicao / receitaTotal : 0;
+    const variableCostRate = receitaTotal > 0 ? custosVariaveisTotais / receitaTotal : 0;
+
+    const peContabil = margemContribuicaoPct > 0 ? custosFixosTotais / margemContribuicaoPct : null;
+    const lucroDesejadoNum = parseFloat(desiredProfit) || 0;
+    const peEconomico = margemContribuicaoPct > 0 ? (custosFixosTotais + lucroDesejadoNum) / margemContribuicaoPct : null;
+
+    const ticketMedio = receitaVendaTxs.length > 0 ? receitaTotal / receitaVendaTxs.length : 0;
+
+    setPeData({
+      start, end, receitaTotal, cmv, despesasFixas, despesasVariaveis,
+      custosVariaveisTotais, custosFixosTotais, margemContribuicao, margemContribuicaoPct,
+      variableCostRate, peContabil, peEconomico, lucroDesejadoNum, ticketMedio,
+      vendasCount: receitaVendaTxs.length,
+    });
+    setPeLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "equilibrio") calculatePontoEquilibrio();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, pePeriodType, peMonth, peYear, peStart, peEnd, desiredProfit, expenseCategoryTypes]);
+
   function fmt(v) {
     return `R$ ${Number(v).toFixed(2).replace(".", ",")}`;
   }
@@ -220,6 +317,7 @@ function FinanceiroContent() {
           <button onClick={() => setTab("contas")} style={{ ...styles.tabButton, ...(tab === "contas" ? styles.tabActive : {}) }}>Contas a Pagar/Receber</button>
           <button onClick={() => setTab("caixa")} style={{ ...styles.tabButton, ...(tab === "caixa" ? styles.tabActive : {}) }}>Caixa</button>
           <button onClick={() => setTab("dre")} style={{ ...styles.tabButton, ...(tab === "dre" ? styles.tabActive : {}) }}>DRE</button>
+          <button onClick={() => setTab("equilibrio")} style={{ ...styles.tabButton, ...(tab === "equilibrio" ? styles.tabActive : {}) }}>Ponto de Equilíbrio</button>
         </div>
 
         {tab === "contas" && (
@@ -517,6 +615,125 @@ function FinanceiroContent() {
             )}
           </>
         )}
+
+        {tab === "equilibrio" && (
+          <>
+            <p style={styles.dreExplainer}>
+              <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              Ponto de equilíbrio é o quanto você precisa faturar pra pagar tudo — sem lucro, mas
+              também sem prejuízo. Custos <b>fixos</b> não mudam com a venda (aluguel, salário fixo);
+              custos <b>variáveis</b> crescem junto com ela (produto vendido, comissão, frete).
+            </p>
+
+            <div style={styles.filters}>
+              <select value={pePeriodType} onChange={(e) => setPePeriodType(e.target.value)} style={styles.filterInput}>
+                <option value="mensal">Mensal</option>
+                <option value="anual">Anual</option>
+                <option value="personalizado">Período personalizado</option>
+              </select>
+              {pePeriodType === "mensal" && <input type="month" value={peMonth} onChange={(e) => setPeMonth(e.target.value)} style={styles.filterInput} />}
+              {pePeriodType === "anual" && <input type="number" value={peYear} onChange={(e) => setPeYear(e.target.value)} style={{ ...styles.filterInput, width: 100 }} />}
+              {pePeriodType === "personalizado" && (
+                <>
+                  <input type="date" value={peStart} onChange={(e) => setPeStart(e.target.value)} style={styles.filterInput} />
+                  <input type="date" value={peEnd} onChange={(e) => setPeEnd(e.target.value)} style={styles.filterInput} />
+                </>
+              )}
+              <input
+                type="number" step="0.01" min="0" value={desiredProfit}
+                onChange={(e) => setDesiredProfit(e.target.value)}
+                placeholder="Lucro desejado (R$, opcional)"
+                style={{ ...styles.filterInput, width: 220 }}
+              />
+            </div>
+
+            {categories.length > 0 && (
+              <div style={styles.classifyBox}>
+                <div style={styles.classifyTitle}>
+                  <Scale size={14} /> Classifique suas categorias de despesa
+                </div>
+                <p style={styles.classifyHelp}>Isso define o que entra como custo fixo ou variável no cálculo.</p>
+                <div style={styles.classifyList}>
+                  {categories.map((cat) => {
+                    const current = expenseCategoryTypes[cat] || "variavel";
+                    return (
+                      <div key={cat} style={styles.classifyRow}>
+                        <span style={styles.classifyCat}>{cat}</span>
+                        <div style={styles.classifyToggle}>
+                          <button
+                            onClick={() => handleSetCategoryType(cat, "fixo")}
+                            style={{ ...styles.classifyButton, ...(current === "fixo" ? styles.classifyButtonActiveFixo : {}) }}
+                          >Fixo</button>
+                          <button
+                            onClick={() => handleSetCategoryType(cat, "variavel")}
+                            style={{ ...styles.classifyButton, ...(current === "variavel" ? styles.classifyButtonActiveVar : {}) }}
+                          >Variável</button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {peLoading || !peData ? (
+              <p style={styles.empty}>Calculando…</p>
+            ) : peData.margemContribuicaoPct <= 0 ? (
+              <p style={styles.empty}>
+                Não é possível calcular: a margem de contribuição está zerada ou negativa nesse
+                período (os custos variáveis consomem toda a receita). Confira a classificação das
+                categorias ou o período escolhido.
+              </p>
+            ) : (
+              <>
+                <div style={styles.statsRow}>
+                  <div style={styles.statCard}>
+                    <div style={{ ...styles.statIcon, background: "#fef2f2" }}><TrendingDown size={16} color="#dc2626" /></div>
+                    <div><div style={styles.statValue}>{fmt(peData.custosFixosTotais)}</div><div style={styles.statLabel}>Custos fixos do período</div></div>
+                  </div>
+                  <div style={styles.statCard}>
+                    <div style={{ ...styles.statIcon, background: "#fef3c7" }}><TrendingDown size={16} color="#d97706" /></div>
+                    <div><div style={styles.statValue}>{fmt(peData.custosVariaveisTotais)}</div><div style={styles.statLabel}>Custos variáveis (CMV + despesas)</div></div>
+                  </div>
+                  <div style={styles.statCard}>
+                    <div style={{ ...styles.statIcon, background: "#f0fdf4" }}><TrendingUp size={16} color="#16a34a" /></div>
+                    <div>
+                      <div style={styles.statValue}>{fmt(peData.margemContribuicao)}</div>
+                      <div style={styles.statLabel}>Margem de contribuição ({(peData.margemContribuicaoPct * 100).toFixed(1)}%)</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div style={styles.peResultRow}>
+                  <div style={styles.peResultCard}>
+                    <span style={styles.peResultLabel}>Ponto de Equilíbrio (sem lucro nem prejuízo)</span>
+                    <span style={styles.peResultValue}>{fmt(peData.peContabil)}</span>
+                    {peData.ticketMedio > 0 && (
+                      <span style={styles.peResultSub}>
+                        ≈ {Math.ceil(peData.peContabil / peData.ticketMedio)} venda(s), considerando um ticket médio de {fmt(peData.ticketMedio)}
+                      </span>
+                    )}
+                  </div>
+                  {peData.lucroDesejadoNum > 0 && (
+                    <div style={{ ...styles.peResultCard, background: "#eff6ff", borderColor: "#bfdbfe" }}>
+                      <span style={{ ...styles.peResultLabel, color: "#1d4ed8" }}>Faturamento necessário para o lucro desejado</span>
+                      <span style={{ ...styles.peResultValue, color: "#1d4ed8" }}>{fmt(peData.peEconomico)}</span>
+                      <span style={styles.peResultSub}>Lucro desejado: {fmt(peData.lucroDesejadoNum)}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div style={styles.chartCard}>
+                  <BreakEvenChart
+                    fixedCosts={peData.custosFixosTotais}
+                    variableCostRate={peData.variableCostRate}
+                    breakEvenValue={peData.peContabil}
+                  />
+                </div>
+              </>
+            )}
+          </>
+        )}
       </div>
 
       {detailTransaction && (
@@ -593,4 +810,20 @@ const styles = {
   dreLabelFinal: { fontSize: 15, fontWeight: 800, color: "#171717" },
   dreValueFinal: { fontSize: 19, fontWeight: 800, color: "#171717" },
   dreMarginFinal: { fontSize: 13, color: "#737373", fontWeight: 600 },
+  classifyBox: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, padding: 16, marginBottom: 18, maxWidth: 560 },
+  classifyTitle: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700, marginBottom: 2 },
+  classifyHelp: { fontSize: 11.5, color: "#a3a3a3", marginBottom: 10 },
+  classifyList: { display: "flex", flexDirection: "column", gap: 6 },
+  classifyRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
+  classifyCat: { fontSize: 12.5, color: "#171717", fontWeight: 500 },
+  classifyToggle: { display: "flex", gap: 4 },
+  classifyButton: { border: "1px solid #e5e5e5", background: "#fafafa", borderRadius: 8, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", color: "#a3a3a3" },
+  classifyButtonActiveFixo: { background: "#fef2f2", borderColor: "#fecaca", color: "#dc2626" },
+  classifyButtonActiveVar: { background: "#fef3c7", borderColor: "#fde68a", color: "#d97706" },
+  peResultRow: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 },
+  peResultCard: { flex: "1 1 260px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 4 },
+  peResultLabel: { fontSize: 12, fontWeight: 700, color: "#166534" },
+  peResultValue: { fontSize: 24, fontWeight: 800, color: "#14532d" },
+  peResultSub: { fontSize: 11, color: "#737373" },
+  chartCard: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 16, padding: 20, display: "flex", justifyContent: "center" },
 };
