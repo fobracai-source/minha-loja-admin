@@ -5,7 +5,7 @@ import { useParams, useRouter } from "next/navigation";
 import AuthGate from "../../../components/AuthGate";
 import Sidebar from "../../../components/Sidebar";
 import { supabase } from "../../../lib/supabaseClient";
-import { Phone, Mail, ArrowLeft, Trash2 } from "lucide-react";
+import { Phone, Mail, ArrowLeft, Trash2, MapPin, CreditCard, TrendingUp, Calendar } from "lucide-react";
 
 const STAGES = [
   { id: "lead", label: "Lead" },
@@ -21,6 +21,33 @@ const INTERACTION_TYPES = [
   { id: "reuniao", label: "Reunião" },
   { id: "outro", label: "Outro" },
 ];
+
+const PAYMENT_METHOD_LABELS = {
+  cod: "Pagar na Entrega",
+  mercadopago: "Mercado Pago",
+  stripe: "Cartão de Crédito",
+  pagbank: "PagBank",
+};
+
+function fmtMoney(v) {
+  return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+}
+
+function fmtDate(d) {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("pt-BR");
+}
+
+// Descobre a forma de pagamento que mais se repete entre os pedidos do cliente
+function formaPagamentoMaisUsada(orders) {
+  if (!orders || orders.length === 0) return null;
+  const contagem = {};
+  orders.forEach((o) => {
+    contagem[o.payment_method] = (contagem[o.payment_method] || 0) + 1;
+  });
+  const [maisUsada] = Object.entries(contagem).sort((a, b) => b[1] - a[1]);
+  return maisUsada ? { id: maisUsada[0], vezes: maisUsada[1] } : null;
+}
 
 function CustomerDetailContent() {
   const { id } = useParams();
@@ -92,6 +119,11 @@ function CustomerDetailContent() {
   }
 
   const totalGasto = orders.reduce((sum, o) => sum + Number(o.total), 0);
+  const ticketMedio = orders.length > 0 ? totalGasto / orders.length : 0;
+  const ultimaCompra = orders.length > 0 ? orders[0].created_at : null;
+  const pagamentoPreferido = formaPagamentoMaisUsada(orders);
+
+  const temEnderecoEstruturado = customer.street || customer.city;
 
   return (
     <div>
@@ -108,12 +140,6 @@ function CustomerDetailContent() {
               {customer.email && <span style={styles.contactItem}><Mail size={13} /> {customer.email}</span>}
               {customer.phone && <span style={styles.contactItem}><Phone size={13} /> {customer.phone}</span>}
             </div>
-            {customer.address && (
-              <p style={styles.addressText}>
-                {customer.address}
-                {customer.reference_point && ` — Referência: ${customer.reference_point}`}
-              </p>
-            )}
           </div>
           <select
             value={customer.stage}
@@ -126,14 +152,67 @@ function CustomerDetailContent() {
           </select>
         </div>
 
+        {/* ── Perfil de consumo ── */}
+        <h2 style={styles.blockTitle}>Perfil de consumo</h2>
         <div style={styles.statsRow}>
           <div style={styles.statCard}>
             <div style={styles.statValue}>{orders.length}</div>
             <div style={styles.statLabel}>Pedidos realizados</div>
           </div>
           <div style={styles.statCard}>
-            <div style={styles.statValue}>R$ {totalGasto.toFixed(2).replace(".", ",")}</div>
+            <div style={styles.statValue}>{fmtMoney(totalGasto)}</div>
             <div style={styles.statLabel}>Total gasto</div>
+          </div>
+          <div style={styles.statCard}>
+            <div style={{ ...styles.statValue, display: "flex", alignItems: "center", gap: 5 }}>
+              <TrendingUp size={14} color="#16a34a" /> {fmtMoney(ticketMedio)}
+            </div>
+            <div style={styles.statLabel}>Ticket médio</div>
+          </div>
+          <div style={styles.statCard}>
+            <div style={{ ...styles.statValue, display: "flex", alignItems: "center", gap: 5 }}>
+              <Calendar size={14} color="#525252" /> {fmtDate(ultimaCompra)}
+            </div>
+            <div style={styles.statLabel}>Última compra</div>
+          </div>
+        </div>
+
+        <div style={styles.infoCardsRow}>
+          <div style={styles.infoCard}>
+            <div style={styles.infoCardHeader}><MapPin size={14} color="#525252" /> Endereço</div>
+            {temEnderecoEstruturado ? (
+              <>
+                <p style={styles.infoCardText}>
+                  {[customer.street, customer.street_number].filter(Boolean).join(", ")}
+                  {customer.complement ? ` — ${customer.complement}` : ""}
+                </p>
+                <p style={styles.infoCardText}>{customer.neighborhood}</p>
+                <p style={styles.infoCardText}>
+                  {[customer.city, customer.state].filter(Boolean).join(" - ")} {customer.zip_code ? `· CEP ${customer.zip_code}` : ""}
+                </p>
+                {customer.reference_point && <p style={styles.infoCardTextMuted}>Referência: {customer.reference_point}</p>}
+              </>
+            ) : customer.address ? (
+              <p style={styles.infoCardText}>{customer.address}</p>
+            ) : (
+              <p style={styles.infoCardTextMuted}>Nenhum endereço cadastrado ainda.</p>
+            )}
+          </div>
+
+          <div style={styles.infoCard}>
+            <div style={styles.infoCardHeader}><CreditCard size={14} color="#525252" /> Forma de pagamento preferida</div>
+            {pagamentoPreferido ? (
+              <>
+                <p style={styles.infoCardText}>
+                  {PAYMENT_METHOD_LABELS[pagamentoPreferido.id] || pagamentoPreferido.id}
+                </p>
+                <p style={styles.infoCardTextMuted}>
+                  Usada em {pagamentoPreferido.vezes} de {orders.length} pedido(s)
+                </p>
+              </>
+            ) : (
+              <p style={styles.infoCardTextMuted}>Ainda sem pedidos suficientes.</p>
+            )}
           </div>
         </div>
 
@@ -146,9 +225,9 @@ function CustomerDetailContent() {
               orders.map((o) => (
                 <div key={o.id} style={styles.orderRow}>
                   <span>#{o.order_number}</span>
-                  <span>{new Date(o.created_at).toLocaleDateString("pt-BR")}</span>
+                  <span>{fmtDate(o.created_at)}</span>
                   <span>{o.status}</span>
-                  <span style={{ fontWeight: 700 }}>R$ {Number(o.total).toFixed(2).replace(".", ",")}</span>
+                  <span style={{ fontWeight: 700 }}>{fmtMoney(o.total)}</span>
                 </div>
               ))
             )}
@@ -213,17 +292,22 @@ const styles = {
   },
   headerCard: {
     display: "flex", justifyContent: "space-between", alignItems: "flex-start",
-    flexWrap: "wrap", gap: 12, marginBottom: 16,
+    flexWrap: "wrap", gap: 12, marginBottom: 20,
   },
   title: { fontSize: 22, fontWeight: 700 },
   contactRow: { display: "flex", gap: 14, marginTop: 4, flexWrap: "wrap" },
   contactItem: { display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#737373" },
-  addressText: { fontSize: 12, color: "#737373", marginTop: 6 },
   stageSelect: { border: "1px solid #e5e5e5", borderRadius: 10, padding: "8px 12px", fontSize: 13, fontWeight: 600 },
-  statsRow: { display: "flex", gap: 12, marginBottom: 20 },
-  statCard: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: "12px 18px", flex: 1 },
-  statValue: { fontSize: 18, fontWeight: 700 },
-  statLabel: { fontSize: 11, color: "#737373" },
+  blockTitle: { fontSize: 13, fontWeight: 700, color: "#525252", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 8 },
+  statsRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 12, marginBottom: 14 },
+  statCard: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: "12px 16px" },
+  statValue: { fontSize: 17, fontWeight: 700 },
+  statLabel: { fontSize: 11, color: "#737373", marginTop: 2 },
+  infoCardsRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 22 },
+  infoCard: { background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 12, padding: 14 },
+  infoCardHeader: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, color: "#525252", marginBottom: 6 },
+  infoCardText: { fontSize: 12.5, color: "#171717", margin: "1px 0" },
+  infoCardTextMuted: { fontSize: 11.5, color: "#a3a3a3", margin: "3px 0 0" },
   grid: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 },
   section: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, padding: 16 },
   sectionTitle: { fontSize: 14, fontWeight: 700, marginBottom: 10 },

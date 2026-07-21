@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, Phone, ShoppingBag, Scale } from "lucide-react";
+import { Plus, Phone, ShoppingBag, Scale, User, MapPin } from "lucide-react";
 
 const STATUSES = [
   { id: "aberto", label: "Aberto" },
@@ -19,9 +19,18 @@ const PRIORITIES = {
   alta: { label: "Alta", color: "#dc2626", bg: "#fee2e2" },
 };
 
+function normalizarTelefone(tel) {
+  return (tel || "").replace(/\D/g, "").slice(-11);
+}
+
+function fmtMoney(v) {
+  return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+}
+
 function SacContent() {
   const [tickets, setTickets] = useState([]);
   const [reclamacoesMap, setReclamacoesMap] = useState({});
+  const [customerProfiles, setCustomerProfiles] = useState({});
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("aberto");
   const [showForm, setShowForm] = useState(false);
@@ -35,16 +44,39 @@ function SacContent() {
 
   async function loadTickets() {
     setLoading(true);
-    const [ticketsResult, reclamacoesResult] = await Promise.all([
+    const [ticketsResult, reclamacoesResult, customersResult] = await Promise.all([
       supabase.from("support_tickets").select("*, orders(order_number)").order("created_at", { ascending: false }),
-      // Busca reclamações formais que nasceram de um chamado do SAC (módulo Jurídico)
       supabase.from("juridico_reclamacoes").select("id, sac_chamado_id, canal, status").not("sac_chamado_id", "is", null),
+      supabase.from("customers").select("id, phone, street, street_number, neighborhood, city, state"),
     ]);
     setTickets(ticketsResult.data || []);
 
     const map = {};
     (reclamacoesResult.data || []).forEach((r) => { map[r.sac_chamado_id] = r; });
     setReclamacoesMap(map);
+
+    const customers = customersResult.data || [];
+    if (customers.length > 0) {
+      const { data: profiles } = await supabase
+        .from("customer_profile_view")
+        .select("*")
+        .in("customer_id", customers.map((c) => c.id));
+
+      const profileByCustomerId = {};
+      (profiles || []).forEach((p) => { profileByCustomerId[p.customer_id] = p; });
+
+      const byPhone = {};
+      customers.forEach((c) => {
+        const tel = normalizarTelefone(c.phone);
+        if (!tel) return;
+        byPhone[tel] = {
+          endereco: [c.street, c.street_number].filter(Boolean).join(", ") +
+            (c.city ? ` — ${c.neighborhood ? c.neighborhood + ", " : ""}${c.city}${c.state ? "/" + c.state : ""}` : ""),
+          ...profileByCustomerId[c.id],
+        };
+      });
+      setCustomerProfiles(byPhone);
+    }
 
     setLoading(false);
   }
@@ -160,6 +192,8 @@ function SacContent() {
             {filtered.map((t) => {
               const p = PRIORITIES[t.priority] || PRIORITIES.media;
               const reclamacao = reclamacoesMap[t.id];
+              const perfil = customerProfiles[normalizarTelefone(t.customer_phone)];
+
               return (
                 <div key={t.id} style={styles.card}>
                   <div style={styles.cardHeader}>
@@ -188,6 +222,20 @@ function SacContent() {
                       {STATUSES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
                     </select>
                   </div>
+
+                  {perfil && (
+                    <div style={styles.profileBox}>
+                      <div style={styles.profileHeader}><User size={12} /> Cliente já conhecido</div>
+                      <div style={styles.profileStatsRow}>
+                        <span><strong>{perfil.total_pedidos || 0}</strong> pedido(s)</span>
+                        <span>Total gasto: <strong>{fmtMoney(perfil.total_gasto)}</strong></span>
+                        <span>Ticket médio: <strong>{fmtMoney(perfil.ticket_medio)}</strong></span>
+                      </div>
+                      {perfil.endereco && (
+                        <div style={styles.profileAddress}><MapPin size={11} /> {perfil.endereco}</div>
+                      )}
+                    </div>
+                  )}
 
                   <p style={styles.description}>{t.description}</p>
 
@@ -259,6 +307,10 @@ const styles = {
   metaItem: { display: "flex", alignItems: "center", gap: 4 },
   metaDate: { marginLeft: "auto" },
   statusSelect: { border: "1px solid #e5e5e5", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600 },
+  profileBox: { background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "8px 12px", marginBottom: 10 },
+  profileHeader: { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 },
+  profileStatsRow: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: "#1e3a8a" },
+  profileAddress: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#3b5998", marginTop: 4 },
   description: { fontSize: 13, color: "#525252", marginBottom: 12, lineHeight: 1.5 },
   responseLabel: { fontSize: 11, fontWeight: 600, color: "#525252", display: "block", marginBottom: 4 },
   responseInput: {
