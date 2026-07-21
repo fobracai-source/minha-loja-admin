@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
-import { CreditCard, Package2, Wallet, Plus, Info } from "lucide-react";
+import { CreditCard, Package2, Wallet, Plus, Info, Truck, Trash2 } from "lucide-react";
 
 const PAYMENT_LABELS = {
   cod: { label: "Pagar na Entrega", description: "Dinheiro, débito ou crédito com o entregador" },
@@ -34,16 +34,68 @@ function ConfiguracoesContent() {
   const [savingOption, setSavingOption] = useState(false);
   const [newOptionLabel, setNewOptionLabel] = useState("");
 
+  const [shippingRules, setShippingRules] = useState([]);
+  const [showNewRuleForm, setShowNewRuleForm] = useState(false);
+  const [savingRule, setSavingRule] = useState(false);
+  const [ruleCepStart, setRuleCepStart] = useState("");
+  const [ruleCepEnd, setRuleCepEnd] = useState("");
+  const [ruleMode, setRuleMode] = useState("preco_fixo");
+  const [rulePrice, setRulePrice] = useState("");
+  const [ruleMinPurchase, setRuleMinPurchase] = useState("");
+
+  function resetRuleForm() {
+    setRuleCepStart(""); setRuleCepEnd(""); setRuleMode("preco_fixo"); setRulePrice(""); setRuleMinPurchase("");
+  }
+
+  async function handleCreateRule(e) {
+    e.preventDefault();
+    const cepStart = ruleCepStart.replace(/\D/g, "");
+    const cepEnd = ruleCepEnd.replace(/\D/g, "");
+    if (cepStart.length !== 8 || cepEnd.length !== 8) {
+      alert("Digite os dois CEPs com 8 dígitos (sem hífen).");
+      return;
+    }
+    setSavingRule(true);
+
+    const { error } = await supabase.from("shipping_rules").insert({
+      cep_start: cepStart,
+      cep_end: cepEnd,
+      mode: ruleMode,
+      price: ruleMode === "preco_fixo" ? parseFloat(rulePrice) || 0 : null,
+      min_purchase_value: ruleMode === "gratis_a_partir_de" ? parseFloat(ruleMinPurchase) || 0 : null,
+    });
+
+    if (error) alert(`Erro ao criar faixa: ${error.message}`);
+
+    resetRuleForm();
+    setShowNewRuleForm(false);
+    setSavingRule(false);
+    loadSettings();
+  }
+
+  async function handleToggleRule(id, currentEnabled) {
+    setShippingRules((prev) => prev.map((r) => (r.id === id ? { ...r, active: !currentEnabled } : r)));
+    await supabase.from("shipping_rules").update({ active: !currentEnabled, updated_at: new Date().toISOString() }).eq("id", id);
+  }
+
+  async function handleDeleteRule(id) {
+    if (!confirm("Excluir essa faixa de frete? Essa ação não pode ser desfeita.")) return;
+    await supabase.from("shipping_rules").delete().eq("id", id);
+    loadSettings();
+  }
+
   async function loadSettings() {
     setLoading(true);
-    const [payments, modules, delivery] = await Promise.all([
+    const [payments, modules, delivery, shipping] = await Promise.all([
       supabase.from("payment_settings").select("*").order("id"),
       supabase.from("module_settings").select("*").order("id"),
       supabase.from("delivery_payment_options").select("*").order("sort_order"),
+      supabase.from("shipping_rules").select("*").order("cep_start"),
     ]);
     setSettings(payments.data || []);
     setModuleSettings(modules.data || []);
     setDeliveryOptions(delivery.data || []);
+    setShippingRules(shipping.data || []);
     setLoading(false);
   }
 
@@ -226,6 +278,84 @@ function ConfiguracoesContent() {
           <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
           Módulos e opções ativados aqui afetam imediatamente o site da loja e outras telas do painel.
         </p>
+
+        <h2 style={{ ...styles.sectionTitle, marginTop: 28 }}><Truck size={15} /> Frete por faixa de CEP</h2>
+        <p style={styles.sectionHelp}>
+          Cadastre faixas de CEP com 3 comportamentos possíveis: <b>preço fixo</b>, <b>sempre grátis</b>, ou
+          <b> grátis a partir de um valor mínimo de compra</b>. Se um CEP não estiver em nenhuma faixa, o site
+          mostra "frete a combinar".
+        </p>
+
+        <button onClick={() => setShowNewRuleForm((v) => !v)} style={styles.newOptionButton}>
+          <Plus size={14} /> Nova faixa de CEP
+        </button>
+
+        {showNewRuleForm && (
+          <form onSubmit={handleCreateRule} style={styles.ruleForm}>
+            <div style={styles.ruleRow}>
+              <div style={{ flex: 1 }}>
+                <label style={styles.ruleLabel}>CEP inicial *</label>
+                <input value={ruleCepStart} onChange={(e) => setRuleCepStart(e.target.value)} placeholder="35164000" style={styles.newOptionInput} required />
+              </div>
+              <div style={{ flex: 1 }}>
+                <label style={styles.ruleLabel}>CEP final *</label>
+                <input value={ruleCepEnd} onChange={(e) => setRuleCepEnd(e.target.value)} placeholder="35165000" style={styles.newOptionInput} required />
+              </div>
+            </div>
+
+            <label style={styles.ruleLabel}>Comportamento *</label>
+            <select value={ruleMode} onChange={(e) => setRuleMode(e.target.value)} style={styles.newOptionInput}>
+              <option value="preco_fixo">Preço fixo</option>
+              <option value="gratis_sempre">Sempre grátis</option>
+              <option value="gratis_a_partir_de">Grátis a partir de um valor mínimo</option>
+            </select>
+
+            {ruleMode === "preco_fixo" && (
+              <>
+                <label style={styles.ruleLabel}>Preço do frete (R$) *</label>
+                <input type="number" step="0.01" min="0" value={rulePrice} onChange={(e) => setRulePrice(e.target.value)} style={styles.newOptionInput} required />
+              </>
+            )}
+
+            {ruleMode === "gratis_a_partir_de" && (
+              <>
+                <label style={styles.ruleLabel}>Valor mínimo de compra (R$) *</label>
+                <input type="number" step="0.01" min="0" value={ruleMinPurchase} onChange={(e) => setRuleMinPurchase(e.target.value)} style={styles.newOptionInput} required />
+              </>
+            )}
+
+            <button type="submit" style={{ ...styles.newOptionSave, marginTop: 10 }} disabled={savingRule}>
+              {savingRule ? "Salvando…" : "Cadastrar faixa"}
+            </button>
+          </form>
+        )}
+
+        {loading ? (
+          <p style={{ color: "#a3a3a3", fontSize: 13 }}>Carregando…</p>
+        ) : shippingRules.length === 0 ? (
+          <p style={{ color: "#a3a3a3", fontSize: 13, padding: "12px 0" }}>Nenhuma faixa de frete cadastrada ainda.</p>
+        ) : (
+          <div style={styles.list}>
+            {shippingRules.map((r) => (
+              <div key={r.id} style={{ ...styles.row, ...(!r.active ? { opacity: 0.5 } : {}) }}>
+                <div style={{ flex: 1 }}>
+                  <div style={styles.rowLabel}>{r.cep_start} — {r.cep_end}</div>
+                  <div style={styles.rowDescription}>
+                    {r.mode === "preco_fixo" && `Preço fixo: R$ ${Number(r.price).toFixed(2).replace(".", ",")}`}
+                    {r.mode === "gratis_sempre" && "Sempre grátis"}
+                    {r.mode === "gratis_a_partir_de" && `Grátis a partir de R$ ${Number(r.min_purchase_value).toFixed(2).replace(".", ",")}`}
+                  </div>
+                </div>
+                <button onClick={() => handleToggleRule(r.id, r.active)} style={{ ...styles.toggle, ...(r.active ? styles.toggleOn : styles.toggleOff) }}>
+                  <span style={{ ...styles.toggleKnob, ...(r.active ? styles.toggleKnobOn : {}) }} />
+                </button>
+                <button onClick={() => handleDeleteRule(r.id)} style={styles.deleteRuleButton}>
+                  <Trash2 size={14} color="#dc2626" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
@@ -278,4 +408,8 @@ const styles = {
   newOptionForm: { display: "flex", gap: 8, marginBottom: 12 },
   newOptionInput: { flex: 1, border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", outline: "none" },
   newOptionSave: { border: "none", background: "#171717", color: "#fff", borderRadius: 10, padding: "9px 16px", fontWeight: 600, fontSize: 13, cursor: "pointer" },
+  ruleForm: { display: "flex", flexDirection: "column", background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: 14, marginBottom: 12, maxWidth: 420 },
+  ruleRow: { display: "flex", gap: 10 },
+  ruleLabel: { fontSize: 11.5, fontWeight: 600, color: "#525252", marginTop: 10, marginBottom: 4, display: "block" },
+  deleteRuleButton: { width: 32, height: 32, borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
 };
