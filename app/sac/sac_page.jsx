@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, Phone, ShoppingBag } from "lucide-react";
+import { Plus, Phone, ShoppingBag, Scale } from "lucide-react";
 
 const STATUSES = [
   { id: "aberto", label: "Aberto" },
@@ -21,6 +21,7 @@ const PRIORITIES = {
 
 function SacContent() {
   const [tickets, setTickets] = useState([]);
+  const [reclamacoesMap, setReclamacoesMap] = useState({});
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState("aberto");
   const [showForm, setShowForm] = useState(false);
@@ -34,11 +35,17 @@ function SacContent() {
 
   async function loadTickets() {
     setLoading(true);
-    const { data } = await supabase
-      .from("support_tickets")
-      .select("*, orders(order_number)")
-      .order("created_at", { ascending: false });
-    setTickets(data || []);
+    const [ticketsResult, reclamacoesResult] = await Promise.all([
+      supabase.from("support_tickets").select("*, orders(order_number)").order("created_at", { ascending: false }),
+      // Busca reclamações formais que nasceram de um chamado do SAC (módulo Jurídico)
+      supabase.from("juridico_reclamacoes").select("id, sac_chamado_id, canal, status").not("sac_chamado_id", "is", null),
+    ]);
+    setTickets(ticketsResult.data || []);
+
+    const map = {};
+    (reclamacoesResult.data || []).forEach((r) => { map[r.sac_chamado_id] = r; });
+    setReclamacoesMap(map);
+
     setLoading(false);
   }
 
@@ -152,6 +159,7 @@ function SacContent() {
           <div style={styles.list}>
             {filtered.map((t) => {
               const p = PRIORITIES[t.priority] || PRIORITIES.media;
+              const reclamacao = reclamacoesMap[t.id];
               return (
                 <div key={t.id} style={styles.card}>
                   <div style={styles.cardHeader}>
@@ -159,6 +167,11 @@ function SacContent() {
                       <div style={styles.subjectRow}>
                         <span style={styles.subject}>{t.subject}</span>
                         <span style={{ ...styles.priorityBadge, color: p.color, background: p.bg }}>{p.label}</span>
+                        {reclamacao && (
+                          <span style={styles.legalBadge} title={`Reclamação formal via ${reclamacao.canal}`}>
+                            <Scale size={11} /> Virou reclamação formal ({reclamacao.canal})
+                          </span>
+                        )}
                       </div>
                       <div style={styles.metaRow}>
                         <span>{t.customer_name}</span>
@@ -238,6 +251,10 @@ const styles = {
   subjectRow: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" },
   subject: { fontSize: 14, fontWeight: 700, color: "#171717" },
   priorityBadge: { fontSize: 10, fontWeight: 700, borderRadius: 999, padding: "2px 8px" },
+  legalBadge: {
+    display: "flex", alignItems: "center", gap: 4, fontSize: 10, fontWeight: 700,
+    borderRadius: 999, padding: "2px 8px", background: "#fee2e2", color: "#dc2626",
+  },
   metaRow: { display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11, color: "#a3a3a3", marginTop: 4 },
   metaItem: { display: "flex", alignItems: "center", gap: 4 },
   metaDate: { marginLeft: "auto" },
