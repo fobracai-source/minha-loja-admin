@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "../lib/supabaseClient";
-import { Upload, X, Plus, Minus, Info } from "lucide-react";
+import { Upload, X, Plus, Minus, Info, Lock } from "lucide-react";
 
 const FISCAL_ORIGINS = [
   { id: "nacional", label: "Nacional" },
@@ -39,6 +39,21 @@ function toNumber(value) {
 export default function ProductForm({ initialProduct = null }) {
   const router = useRouter();
   const isEditing = Boolean(initialProduct);
+
+  // Verifica se o módulo Compras e Suprimentos está ativo — muda o comportamento do formulário
+  const [comprasAtivo, setComprasAtivo] = useState(false);
+
+  useEffect(() => {
+    async function loadModuleSetting() {
+      const { data } = await supabase
+        .from("module_settings")
+        .select("enabled")
+        .eq("id", "compras_suprimentos")
+        .single();
+      setComprasAtivo(data?.enabled || false);
+    }
+    loadModuleSetting();
+  }, []);
 
   // Informações principais
   const [name, setName] = useState(initialProduct?.name || "");
@@ -114,6 +129,7 @@ export default function ProductForm({ initialProduct = null }) {
   }
 
   async function handleStockAdjustment(direction) {
+    if (comprasAtivo) return; // trava extra de segurança
     const amount = parseInt(stockAdjustment, 10);
     if (!amount || amount <= 0 || !isEditing) return;
     setAdjustingStock(true);
@@ -193,19 +209,27 @@ export default function ProductForm({ initialProduct = null }) {
         active,
         image_url: uploadedUrls[0] || null,
         image_urls: uploadedUrls,
-        cost_price: toNumber(costPrice),
+        // Quando Compras está ativo, custo e impostos não são enviados por aqui —
+        // eles só mudam através do lançamento de uma Nota de Compra.
+        ...(comprasAtivo
+          ? {}
+          : {
+              cost_price: toNumber(costPrice),
+              tax_pct: toNumber(taxPct),
+            }),
         expense_commercialization_pct: toNumber(expenseCommercialization),
         expense_discount_pct: toNumber(expenseDiscount),
         expense_marketing_pct: toNumber(expenseMarketing),
         expense_fixed_pct: toNumber(expenseFixed),
-        tax_pct: toNumber(taxPct),
         profit_pct: toNumber(profitPct),
         price: Number(salePrice.toFixed(2)),
         promotional_price: promotionalPrice ? Number(promotionalPrice.toFixed(2)) : null,
         discount_percent: discountPercent ? toNumber(discountPercent) : null,
         sku: sku || null,
         barcode: barcode || null,
-        stock: isEditing ? stock : parseInt(stock, 10) || 0,
+        // Quando Compras está ativo, um produto novo nasce com estoque zero —
+        // o estoque só entra através de uma Nota de Compra lançada.
+        ...(comprasAtivo && !isEditing ? { stock: 0 } : isEditing ? {} : { stock: parseInt(stock, 10) || 0 }),
         weight_kg: weightKg ? parseFloat(weightKg) : null,
         height_cm: heightCm ? parseFloat(heightCm) : null,
         width_cm: widthCm ? parseFloat(widthCm) : null,
@@ -286,8 +310,22 @@ export default function ProductForm({ initialProduct = null }) {
         O preço de venda é calculado automaticamente: Valor de Compra ÷ (100% − despesas − impostos − lucro).
       </p>
 
-      <label style={styles.label}>Valor de compra (R$) *</label>
-      <input type="number" step="0.01" min="0" value={costPrice} onChange={(e) => setCostPrice(e.target.value)} style={styles.input} required />
+      {comprasAtivo && (
+        <p style={styles.lockedNote}>
+          <Lock size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          O módulo Compras e Suprimentos está ativo — valor de compra e % impostos são atualizados
+          automaticamente ao lançar uma Nota de Compra, e não podem ser editados aqui.
+        </p>
+      )}
+
+      <label style={styles.label}>Valor de compra (R$) {!comprasAtivo && "*"}</label>
+      <input
+        type="number" step="0.01" min="0" value={costPrice}
+        onChange={(e) => setCostPrice(e.target.value)}
+        style={{ ...styles.input, ...(comprasAtivo ? styles.inputDisabled : {}) }}
+        required={!comprasAtivo}
+        disabled={comprasAtivo}
+      />
 
       <label style={styles.label}>Despesas (%)</label>
       <div style={styles.rowWrap}>
@@ -312,7 +350,12 @@ export default function ProductForm({ initialProduct = null }) {
       <div style={styles.row}>
         <div style={{ flex: 1 }}>
           <label style={styles.label}>% Impostos</label>
-          <input type="number" step="0.1" min="0" value={taxPct} onChange={(e) => setTaxPct(e.target.value)} style={styles.input} />
+          <input
+            type="number" step="0.1" min="0" value={taxPct}
+            onChange={(e) => setTaxPct(e.target.value)}
+            style={{ ...styles.input, ...(comprasAtivo ? styles.inputDisabled : {}) }}
+            disabled={comprasAtivo}
+          />
         </div>
         <div style={{ flex: 1 }}>
           <label style={styles.label}>% Lucro desejado</label>
@@ -358,15 +401,30 @@ export default function ProductForm({ initialProduct = null }) {
       {isEditing ? (
         <>
           <label style={styles.label}>Estoque atual</label>
-          <div style={styles.stockRow}>
-            <div style={{ ...styles.stockValue, ...(stock === 0 ? styles.stockZero : {}) }}>
-              {stock} {stock === 0 && "· Estoque zerado"}
+          {comprasAtivo ? (
+            <>
+              <div style={styles.stockValue}>{stock}</div>
+              <p style={styles.lockedNote}>
+                <Lock size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                Estoque gerenciado pelo módulo Compras e Suprimentos — lance uma Nota de Compra para adicionar unidades.
+              </p>
+            </>
+          ) : (
+            <div style={styles.stockRow}>
+              <div style={{ ...styles.stockValue, ...(stock === 0 ? styles.stockZero : {}) }}>
+                {stock} {stock === 0 && "· Estoque zerado"}
+              </div>
+              <input type="number" min="1" value={stockAdjustment} onChange={(e) => setStockAdjustment(e.target.value)} placeholder="Qtd." style={styles.stockInput} />
+              <button type="button" onClick={() => handleStockAdjustment("add")} disabled={adjustingStock} style={styles.stockButton}><Plus size={14} /></button>
+              <button type="button" onClick={() => handleStockAdjustment("remove")} disabled={adjustingStock} style={styles.stockButton}><Minus size={14} /></button>
             </div>
-            <input type="number" min="1" value={stockAdjustment} onChange={(e) => setStockAdjustment(e.target.value)} placeholder="Qtd." style={styles.stockInput} />
-            <button type="button" onClick={() => handleStockAdjustment("add")} disabled={adjustingStock} style={styles.stockButton}><Plus size={14} /></button>
-            <button type="button" onClick={() => handleStockAdjustment("remove")} disabled={adjustingStock} style={styles.stockButton}><Minus size={14} /></button>
-          </div>
+          )}
         </>
+      ) : comprasAtivo ? (
+        <p style={styles.lockedNote}>
+          <Lock size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          Este produto nasce com estoque zero — adicione unidades depois, lançando uma Nota de Compra no módulo Compras.
+        </p>
       ) : (
         <>
           <label style={styles.label}>Estoque inicial</label>
@@ -418,6 +476,7 @@ const styles = {
   form: { display: "flex", flexDirection: "column", maxWidth: 520 },
   sectionTitle: { fontSize: 13, fontWeight: 700, color: "#171717", textTransform: "uppercase", letterSpacing: 0.3, marginTop: 24, marginBottom: 4, paddingBottom: 8, borderBottom: "1px solid #f0f0f0" },
   formulaNote: { display: "flex", gap: 6, fontSize: 11.5, color: "#737373", background: "#fafafa", border: "1px solid #e5e5e5", borderRadius: 10, padding: "8px 10px", marginTop: 8 },
+  lockedNote: { display: "flex", gap: 6, fontSize: 11.5, color: "#1d4ed8", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "8px 10px", marginTop: 8 },
   photosRow: { display: "flex", gap: 10, marginTop: 8, marginBottom: 4, flexWrap: "wrap" },
   photoSlot: { position: "relative" },
   imageUpload: { cursor: "pointer", display: "inline-block" },
@@ -427,6 +486,7 @@ const styles = {
   removePhotoButton: { position: "absolute", top: -6, right: -6, width: 20, height: 20, borderRadius: 10, background: "#171717", color: "#fff", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
   label: { fontSize: 12, fontWeight: 600, color: "#525252", marginBottom: 4, marginTop: 12, display: "block" },
   input: { border: "1px solid #e5e5e5", borderRadius: 10, padding: "10px 12px", outline: "none", width: "100%" },
+  inputDisabled: { background: "#f5f5f5", color: "#a3a3a3", cursor: "not-allowed" },
   row: { display: "flex", gap: 12 },
   rowWrap: { display: "flex", gap: 10, flexWrap: "wrap" },
   fieldHint: { fontSize: 10, color: "#a3a3a3", marginTop: 2, display: "block" },

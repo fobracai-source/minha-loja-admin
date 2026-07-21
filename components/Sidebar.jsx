@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { LayoutGrid, Package, ClipboardList, Users, Tag, Settings, Wallet, Truck, UserCog, Headphones, Shield, Scale, LogOut } from "lucide-react";
+import { LayoutGrid, Package, ClipboardList, Users, Tag, Settings, Wallet, Truck, UserCog, Headphones, Shield, Scale, ShoppingBasket, LogOut } from "lucide-react";
 import { supabase } from "../lib/supabaseClient";
 
 const NAV_ITEMS = [
   { href: "/", label: "Painel", icon: LayoutGrid },
+  { href: "/compras", label: "Compras", icon: ShoppingBasket },
   { href: "/produtos", label: "Produtos", icon: Package },
   { href: "/pedidos", label: "Vendas", icon: ClipboardList },
   { href: "/logistica", label: "Logística", icon: Truck },
