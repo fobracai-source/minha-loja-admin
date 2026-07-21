@@ -6,7 +6,7 @@ import Sidebar from "../../components/Sidebar";
 import TransactionDetailModal from "../../components/TransactionDetailModal";
 import BreakEvenChart from "../../components/BreakEvenChart";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale } from "lucide-react";
+import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw } from "lucide-react";
 
 function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
@@ -21,9 +21,13 @@ function lastDayOfMonth(yyyyMM) {
   const [y, m] = yyyyMM.split("-").map(Number);
   return new Date(y, m, 0).toISOString().slice(0, 10);
 }
+function fmtDate(d) {
+  if (!d) return "—";
+  return new Date(d + "T00:00:00").toLocaleDateString("pt-BR");
+}
 
 function FinanceiroContent() {
-  const [tab, setTab] = useState("contas"); // contas | caixa | dre
+  const [tab, setTab] = useState("contas"); // contas | caixa | plano | dre | equilibrio | bancos
   const [transactions, setTransactions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [detailTransaction, setDetailTransaction] = useState(null);
@@ -41,12 +45,12 @@ function FinanceiroContent() {
   const [caixaCategoryFilter, setCaixaCategoryFilter] = useState("todos");
 
   // Filtros — DRE
-  const [drePeriodType, setDrePeriodType] = useState("mensal"); // mensal | anual | personalizado
+  const [drePeriodType, setDrePeriodType] = useState("mensal");
   const [dreMonth, setDreMonth] = useState(currentMonthInput());
   const [dreYear, setDreYear] = useState(String(currentYear()));
   const [dreStart, setDreStart] = useState(todayDateInput());
   const [dreEnd, setDreEnd] = useState(todayDateInput());
-  const [dreRegime, setDreRegime] = useState("competencia"); // caixa | competencia
+  const [dreRegime, setDreRegime] = useState("competencia");
   const [dreLoading, setDreLoading] = useState(false);
   const [dreData, setDreData] = useState(null);
 
@@ -75,6 +79,137 @@ function FinanceiroContent() {
   const [amount, setAmount] = useState("");
   const [dueDate, setDueDate] = useState(todayDateInput());
   const [saving, setSaving] = useState(false);
+
+  // ────────────────── ABA BANCOS ──────────────────
+  const [bancoLoading, setBancoLoading] = useState(true);
+  const [contaBanco, setContaBanco] = useState(null);
+  const [transacoesBanco, setTransacoesBanco] = useState([]);
+  const [emprestimosBanco, setEmprestimosBanco] = useState([]);
+  const [parcelasPorEmprestimo, setParcelasPorEmprestimo] = useState({});
+  const [emprestimoExpandido, setEmprestimoExpandido] = useState(null);
+  const [showTransferForm, setShowTransferForm] = useState(null); // "para_caixa" | "do_caixa" | null
+  const [transferValor, setTransferValor] = useState("");
+  const [savingTransfer, setSavingTransfer] = useState(false);
+  const [processandoCobrancas, setProcessandoCobrancas] = useState(false);
+  const [mensagemBanco, setMensagemBanco] = useState("");
+
+  async function loadBancoData() {
+    setBancoLoading(true);
+    const { data: cliente } = await supabase
+      .from("banco_alegre_clientes")
+      .select("id")
+      .eq("nome", "Minha Loja")
+      .single();
+
+    if (!cliente) {
+      setBancoLoading(false);
+      return;
+    }
+
+    const { data: conta } = await supabase
+      .from("banco_alegre_contas")
+      .select("*")
+      .eq("cliente_id", cliente.id)
+      .single();
+
+    if (!conta) {
+      setBancoLoading(false);
+      return;
+    }
+
+    const [transacoes, emprestimos] = await Promise.all([
+      supabase.from("banco_alegre_transacoes").select("*").eq("conta_id", conta.id).order("created_at", { ascending: false }),
+      supabase.from("banco_alegre_emprestimos").select("*").eq("conta_id", conta.id).order("created_at", { ascending: false }),
+    ]);
+
+    setContaBanco(conta);
+    setTransacoesBanco(transacoes.data || []);
+    setEmprestimosBanco(emprestimos.data || []);
+    setBancoLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "bancos") loadBancoData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  async function toggleExpandirEmprestimo(emprestimoId) {
+    if (emprestimoExpandido === emprestimoId) {
+      setEmprestimoExpandido(null);
+      return;
+    }
+    setEmprestimoExpandido(emprestimoId);
+    if (!parcelasPorEmprestimo[emprestimoId]) {
+      const { data } = await supabase
+        .from("banco_alegre_emprestimo_parcelas")
+        .select("*")
+        .eq("emprestimo_id", emprestimoId)
+        .order("numero_parcela");
+      setParcelasPorEmprestimo((prev) => ({ ...prev, [emprestimoId]: data || [] }));
+    }
+  }
+
+  async function handleTransfer(e) {
+    e.preventDefault();
+    if (!transferValor || !contaBanco) return;
+    setSavingTransfer(true);
+
+    const rpcName = showTransferForm === "para_caixa" ? "transferir_banco_para_caixa" : "transferir_caixa_para_banco";
+    const { error } = await supabase.rpc(rpcName, {
+      p_conta_id: contaBanco.id,
+      p_valor: parseFloat(transferValor),
+      p_descricao: null,
+    });
+
+    if (error) {
+      alert(`Erro na transferência: ${error.message}`);
+    }
+
+    setTransferValor("");
+    setShowTransferForm(null);
+    setSavingTransfer(false);
+    loadBancoData();
+    loadTransactions(); // atualiza o Caixa também, já que a transferência lança lá
+  }
+
+  async function handleProcessarCobrancas() {
+    setProcessandoCobrancas(true);
+    setMensagemBanco("");
+    const { data, error } = await supabase.rpc("processar_cobrancas_vencidas");
+    setProcessandoCobrancas(false);
+    if (error) {
+      setMensagemBanco(`Erro: ${error.message}`);
+    } else {
+      setMensagemBanco(`${data} parcela(s) vencida(s) processada(s).`);
+      loadBancoData();
+    }
+  }
+
+  function fmtMoneyBanco(v) {
+    return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+  }
+
+  function tipoTransacaoLabel(tipo) {
+    const map = {
+      Emprestimo_Liberado: "Empréstimo liberado",
+      Pagamento_Parcela: "Pagamento de parcela",
+      Transferencia_Para_Caixa: "Transferência para o Caixa",
+      Transferencia_Do_Caixa: "Transferência do Caixa",
+      Aplicacao: "Aplicação (captação)",
+      Resgate: "Resgate de aplicação",
+      Juros_Cheque_Especial: "Juros de cheque especial",
+    };
+    return map[tipo] || tipo;
+  }
+
+  const usoChequeEspecial = contaBanco && contaBanco.saldo < 0
+    ? Math.min(Math.abs(contaBanco.saldo), contaBanco.limite_cheque_especial)
+    : 0;
+  const excedenteChequeEspecial = contaBanco && Math.abs(Math.min(contaBanco.saldo, 0)) > contaBanco.limite_cheque_especial
+    ? Math.abs(contaBanco.saldo) - contaBanco.limite_cheque_especial
+    : 0;
+
+  // ────────────────── FIM ABA BANCOS ──────────────────
 
   async function loadTransactions() {
     setLoading(true);
@@ -113,7 +248,6 @@ function FinanceiroContent() {
     loadChartOfAccounts();
   }, []);
 
-  // Mapas rápidos: nome da conta -> tipo / classificação
   const accountTypeMap = useMemo(() => {
     const map = {};
     chartOfAccounts.forEach((a) => { map[a.name] = a.type; });
@@ -194,7 +328,6 @@ function FinanceiroContent() {
   const caixaDespesas = caixaFiltered.filter((t) => t.type === "saida").reduce((s, t) => s + Number(t.amount), 0);
   const caixaSaldo = caixaReceitas - caixaDespesas;
 
-  // ── Cálculo da DRE ──
   function getDrePeriodRange() {
     if (drePeriodType === "mensal") return { start: `${dreMonth}-01`, end: lastDayOfMonth(dreMonth) };
     if (drePeriodType === "anual") return { start: `${dreYear}-01-01`, end: `${dreYear}-12-31` };
@@ -222,15 +355,12 @@ function FinanceiroContent() {
     const outrasReceitas = outrasReceitasTxs.reduce((s, t) => s + Number(t.amount), 0);
     const totalDespesas = despesasTxs.reduce((s, t) => s + Number(t.amount), 0);
 
-    // Agrupa despesas por categoria
     const despesasPorCategoria = {};
     despesasTxs.forEach((t) => {
       const cat = t.category || "Sem categoria";
       despesasPorCategoria[cat] = (despesasPorCategoria[cat] || 0) + Number(t.amount);
     });
 
-    // Calcula o CMV: busca os pedidos ligados às receitas de venda do período,
-    // pega os itens vendidos e multiplica pela "Valor de Compra" de cada produto
     let cmv = 0;
     const orderIds = [...new Set(receitaVendaTxs.map((t) => t.order_id).filter(Boolean))];
 
@@ -270,7 +400,6 @@ function FinanceiroContent() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, drePeriodType, dreMonth, dreYear, dreStart, dreEnd, dreRegime]);
 
-  // ── Cálculo do Ponto de Equilíbrio ──
   function getPePeriodRange() {
     if (pePeriodType === "mensal") return { start: `${peMonth}-01`, end: lastDayOfMonth(peMonth) };
     if (pePeriodType === "anual") return { start: `${peYear}-01-01`, end: `${peYear}-12-31` };
@@ -293,7 +422,6 @@ function FinanceiroContent() {
 
     const receitaTotal = receitaVendaTxs.reduce((s, t) => s + Number(t.amount), 0);
 
-    // CMV (mesmo cálculo da DRE) — é sempre custo variável
     let cmv = 0;
     const orderIds = [...new Set(receitaVendaTxs.map((t) => t.order_id).filter(Boolean))];
     if (orderIds.length > 0) {
@@ -305,7 +433,6 @@ function FinanceiroContent() {
       cmv = (items || []).reduce((sum, item) => sum + (costMap[item.product_id] || 0) * item.quantity, 0);
     }
 
-    // Despesas do período separadas por classificação (fixo/variável)
     let despesasFixas = 0;
     let despesasVariaveis = 0;
     despesasTxs.forEach((t) => {
@@ -351,11 +478,12 @@ function FinanceiroContent() {
       <Sidebar />
       <div style={styles.content}>
         <h1 style={styles.title}>Financeiro</h1>
-        <p style={styles.subtitle}>Contas a pagar/receber, caixa e resultado do período</p>
+        <p style={styles.subtitle}>Contas a pagar/receber, caixa, banco e resultado do período</p>
 
         <div style={styles.tabs}>
           <button onClick={() => setTab("contas")} style={{ ...styles.tabButton, ...(tab === "contas" ? styles.tabActive : {}) }}>Contas a Pagar/Receber</button>
           <button onClick={() => setTab("caixa")} style={{ ...styles.tabButton, ...(tab === "caixa" ? styles.tabActive : {}) }}>Caixa</button>
+          <button onClick={() => setTab("bancos")} style={{ ...styles.tabButton, ...(tab === "bancos" ? styles.tabActive : {}) }}>Bancos</button>
           <button onClick={() => setTab("plano")} style={{ ...styles.tabButton, ...(tab === "plano" ? styles.tabActive : {}) }}>Plano de Contas</button>
           <button onClick={() => setTab("dre")} style={{ ...styles.tabButton, ...(tab === "dre" ? styles.tabActive : {}) }}>DRE</button>
           <button onClick={() => setTab("equilibrio")} style={{ ...styles.tabButton, ...(tab === "equilibrio" ? styles.tabActive : {}) }}>Ponto de Equilíbrio</button>
@@ -446,6 +574,7 @@ function FinanceiroContent() {
                 <option value="todos">Toda origem</option>
                 <option value="manual">Lançado manualmente</option>
                 <option value="pedido_entregue">Gerado por pedido entregue</option>
+                <option value="transferencia_banco">Transferência bancária</option>
               </select>
             </div>
 
@@ -568,6 +697,166 @@ function FinanceiroContent() {
                   </tbody>
                 </table>
               </div>
+            )}
+          </>
+        )}
+
+        {tab === "bancos" && (
+          <>
+            {bancoLoading ? (
+              <p style={styles.empty}>Carregando…</p>
+            ) : !contaBanco ? (
+              <p style={styles.empty}>Nenhuma conta encontrada no Banco Alegre para a Minha Loja ainda.</p>
+            ) : (
+              <>
+                <div style={styles.statsRow}>
+                  <div style={{ ...styles.statCard, ...(contaBanco.saldo < 0 ? styles.statCardAlert : {}) }}>
+                    <div style={{ ...styles.statIcon, background: contaBanco.saldo >= 0 ? "#f0fdf4" : "#fee2e2" }}>
+                      <Landmark size={16} color={contaBanco.saldo >= 0 ? "#16a34a" : "#dc2626"} />
+                    </div>
+                    <div>
+                      <div style={{ ...styles.statValue, color: contaBanco.saldo >= 0 ? "#16a34a" : "#dc2626" }}>{fmtMoneyBanco(contaBanco.saldo)}</div>
+                      <div style={styles.statLabel}>Saldo no Banco Alegre</div>
+                    </div>
+                  </div>
+                  {contaBanco.cheque_especial_contratado && (
+                    <div style={styles.statCard}>
+                      <div style={{ ...styles.statIcon, background: "#eff6ff" }}><ShieldCheck size={16} color="#2563eb" /></div>
+                      <div>
+                        <div style={styles.statValue}>{fmtMoneyBanco(usoChequeEspecial)} / {fmtMoneyBanco(contaBanco.limite_cheque_especial)}</div>
+                        <div style={styles.statLabel}>Cheque especial usado ({contaBanco.taxa_cheque_especial_pct_am}% a.m.)</div>
+                      </div>
+                    </div>
+                  )}
+                  {excedenteChequeEspecial > 0 && (
+                    <div style={{ ...styles.statCard, ...styles.statCardAlert }}>
+                      <div style={{ ...styles.statIcon, background: "#fee2e2" }}><AlertTriangle size={16} color="#dc2626" /></div>
+                      <div>
+                        <div style={styles.statValue}>{fmtMoneyBanco(excedenteChequeEspecial)}</div>
+                        <div style={styles.statLabel}>Estourou o limite — juros de mora ({contaBanco.taxa_mora_excedente_pct_am}% a.m.)</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div style={styles.headerRow}>
+                  <div style={{ display: "flex", gap: 8 }}>
+                    <button onClick={() => setShowTransferForm("para_caixa")} style={styles.newButton}>
+                      <ArrowRightLeft size={15} /> Banco → Caixa
+                    </button>
+                    <button onClick={() => setShowTransferForm("do_caixa")} style={styles.batchButton}>
+                      <ArrowRightLeft size={15} /> Caixa → Banco
+                    </button>
+                  </div>
+                  <button onClick={handleProcessarCobrancas} disabled={processandoCobrancas} style={styles.refreshButton}>
+                    <RefreshCw size={13} /> {processandoCobrancas ? "Processando…" : "Processar cobranças vencidas"}
+                  </button>
+                </div>
+
+                {mensagemBanco && <p style={styles.mensagemBanco}>{mensagemBanco}</p>}
+
+                {showTransferForm && (
+                  <form onSubmit={handleTransfer} style={styles.form}>
+                    <label style={styles.label}>
+                      {showTransferForm === "para_caixa" ? "Valor a transferir do Banco para o Caixa (R$)" : "Valor a transferir do Caixa para o Banco (R$)"}
+                    </label>
+                    <input type="number" step="0.01" min="0.01" value={transferValor} onChange={(e) => setTransferValor(e.target.value)} style={styles.input} required autoFocus />
+                    <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+                      <button type="button" onClick={() => setShowTransferForm(null)} style={styles.cancelButton}>Cancelar</button>
+                      <button type="submit" style={{ ...styles.saveButton, marginTop: 0, flex: 1 }} disabled={savingTransfer}>
+                        {savingTransfer ? "Transferindo…" : "Confirmar transferência"}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                <h2 style={{ ...styles.sectionTitle, marginTop: 24 }}><Landmark size={16} /> Empréstimos</h2>
+                {emprestimosBanco.length === 0 ? (
+                  <p style={styles.empty}>Nenhum empréstimo contratado com o Banco Alegre.</p>
+                ) : (
+                  <div style={styles.list}>
+                    {emprestimosBanco.map((emp) => (
+                      <div key={emp.id} style={styles.card}>
+                        <button onClick={() => toggleExpandirEmprestimo(emp.id)} style={styles.cardHeaderButton}>
+                          <div style={{ flex: 1, textAlign: "left" }}>
+                            <div style={styles.empDetalhe}>
+                              {fmtMoneyBanco(emp.valor_principal)} em {emp.num_parcelas}x de {fmtMoneyBanco(emp.valor_parcela)} · {emp.taxa_juros_pct_am}% a.m. · contratado em {fmtDate(emp.data_contratacao)}
+                            </div>
+                          </div>
+                          <span style={{ ...styles.statusBadge, ...(emp.status === "Quitado" ? styles.statusQuitado : styles.statusAtivo) }}>{emp.status}</span>
+                          {emprestimoExpandido === emp.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                        </button>
+                        {emprestimoExpandido === emp.id && (
+                          <div style={styles.parcelasWrap}>
+                            {!parcelasPorEmprestimo[emp.id] ? (
+                              <p style={styles.empty}>Carregando parcelas…</p>
+                            ) : (
+                              <table>
+                                <thead>
+                                  <tr>
+                                    <th style={styles.th}>#</th>
+                                    <th style={styles.th}>Vencimento</th>
+                                    <th style={styles.th}>Parcela</th>
+                                    <th style={styles.th}>Juros</th>
+                                    <th style={styles.th}>Amortização</th>
+                                    <th style={styles.th}>Saldo devedor</th>
+                                    <th style={styles.th}>Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {parcelasPorEmprestimo[emp.id].map((p) => (
+                                    <tr key={p.id} style={styles.tr}>
+                                      <td style={styles.td}>{p.numero_parcela}</td>
+                                      <td style={styles.td}>{fmtDate(p.data_vencimento)}</td>
+                                      <td style={styles.td}>{fmtMoneyBanco(p.valor_parcela)}</td>
+                                      <td style={styles.td}>{fmtMoneyBanco(p.valor_juros)}</td>
+                                      <td style={styles.td}>{fmtMoneyBanco(p.valor_amortizacao)}</td>
+                                      <td style={styles.td}>{fmtMoneyBanco(p.saldo_devedor_apos)}</td>
+                                      <td style={styles.td}>
+                                        <span style={{ ...styles.parcelaBadge, ...(p.status === "Paga" ? styles.parcelaBadgePaga : styles.parcelaBadgePendente) }}>{p.status}</span>
+                                      </td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <h2 style={{ ...styles.sectionTitle, marginTop: 24 }}>Extrato</h2>
+                {transacoesBanco.length === 0 ? (
+                  <p style={styles.empty}>Nenhuma movimentação ainda.</p>
+                ) : (
+                  <div style={styles.tableWrap}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th style={styles.th}>Data</th>
+                          <th style={styles.th}>Tipo</th>
+                          <th style={styles.th}>Descrição</th>
+                          <th style={styles.th}>Valor</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {transacoesBanco.map((t) => (
+                          <tr key={t.id} style={styles.tr}>
+                            <td style={styles.td}>{new Date(t.created_at).toLocaleDateString("pt-BR")}</td>
+                            <td style={styles.td}>{tipoTransacaoLabel(t.tipo)}</td>
+                            <td style={styles.td}>{t.descricao}</td>
+                            <td style={{ ...styles.td, color: t.valor >= 0 ? "#16a34a" : "#dc2626", fontWeight: 600 }}>
+                              {t.valor >= 0 ? "+" : ""}{fmtMoneyBanco(t.valor)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </>
             )}
           </>
         )}
@@ -883,23 +1172,27 @@ const styles = {
   content: { padding: "24px 20px", maxWidth: 1100, margin: "0 auto" },
   title: { fontSize: 22, fontWeight: 700 },
   subtitle: { fontSize: 13, color: "#737373", marginBottom: 16 },
-  tabs: { display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid #e5e5e5" },
+  tabs: { display: "flex", gap: 4, marginBottom: 18, borderBottom: "1px solid #e5e5e5", flexWrap: "wrap" },
   tabButton: { border: "none", background: "none", padding: "10px 4px", marginRight: 20, fontSize: 13.5, fontWeight: 600, color: "#a3a3a3", cursor: "pointer", borderBottom: "2px solid transparent" },
   tabActive: { color: "#171717", borderBottomColor: "#171717" },
   statsRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 20 },
   statCard: { display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: 14 },
   statCardAlert: { background: "#fef2f2", borderColor: "#fecaca" },
-  statIcon: { width: 32, height: 32, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center" },
+  statIcon: { width: 32, height: 32, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   statValue: { fontSize: 16, fontWeight: 700 },
   statLabel: { fontSize: 11, color: "#737373" },
   headerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 },
   newButton: { display: "flex", alignItems: "center", gap: 6, background: "#171717", color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer" },
   batchButton: { display: "flex", alignItems: "center", gap: 6, background: "#2563eb", color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer" },
+  refreshButton: { display: "flex", alignItems: "center", gap: 6, border: "1px solid #e5e5e5", background: "#fff", borderRadius: 10, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
+  mensagemBanco: { fontSize: 12.5, color: "#16a34a", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "8px 12px", marginBottom: 14 },
+  sectionTitle: { display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 700, marginBottom: 10 },
   form: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, padding: 16, marginBottom: 16, display: "flex", flexDirection: "column", maxWidth: 480 },
   row: { display: "flex", gap: 12 },
   label: { fontSize: 12, fontWeight: 600, color: "#525252", marginBottom: 4, marginTop: 12, display: "block" },
   input: { border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", outline: "none", width: "100%" },
   saveButton: { border: "none", background: "#171717", color: "#fff", borderRadius: 10, padding: "11px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer", marginTop: 16 },
+  cancelButton: { border: "1px solid #e5e5e5", background: "#fff", borderRadius: 10, padding: "11px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer" },
   filters: { display: "flex", gap: 10, marginBottom: 14, flexWrap: "wrap" },
   filterInput: { border: "1px solid #e5e5e5", borderRadius: 10, padding: "8px 12px" },
   empty: { color: "#a3a3a3", fontSize: 13, padding: 24, textAlign: "center" },
@@ -938,16 +1231,6 @@ const styles = {
   dreLabelFinal: { fontSize: 15, fontWeight: 800, color: "#171717" },
   dreValueFinal: { fontSize: 19, fontWeight: 800, color: "#171717" },
   dreMarginFinal: { fontSize: 13, color: "#737373", fontWeight: 600 },
-  classifyBox: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, padding: 16, marginBottom: 18, maxWidth: 560 },
-  classifyTitle: { display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 700, marginBottom: 2 },
-  classifyHelp: { fontSize: 11.5, color: "#a3a3a3", marginBottom: 10 },
-  classifyList: { display: "flex", flexDirection: "column", gap: 6 },
-  classifyRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 },
-  classifyCat: { fontSize: 12.5, color: "#171717", fontWeight: 500 },
-  classifyToggle: { display: "flex", gap: 4 },
-  classifyButton: { border: "1px solid #e5e5e5", background: "#fafafa", borderRadius: 8, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: "pointer", color: "#a3a3a3" },
-  classifyButtonActiveFixo: { background: "#fef2f2", borderColor: "#fecaca", color: "#dc2626" },
-  classifyButtonActiveVar: { background: "#fef3c7", borderColor: "#fde68a", color: "#d97706" },
   peResultRow: { display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 18 },
   peResultCard: { flex: "1 1 260px", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 14, padding: "14px 16px", display: "flex", flexDirection: "column", gap: 4 },
   peResultLabel: { fontSize: 12, fontWeight: 700, color: "#166534" },
@@ -958,4 +1241,15 @@ const styles = {
   warnNote: { fontSize: 12, color: "#d97706", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "9px 12px", marginTop: 10 },
   inlineLinkButton: { border: "none", background: "none", color: "#171717", fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, font: "inherit" },
   inlineSelect: { border: "1px solid #e5e5e5", borderRadius: 8, padding: "5px 8px", fontSize: 12, fontWeight: 600 },
+  list: { display: "flex", flexDirection: "column", gap: 10 },
+  card: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, overflow: "hidden" },
+  cardHeaderButton: { display: "flex", alignItems: "center", gap: 12, width: "100%", padding: 14, background: "none", border: "none", cursor: "pointer" },
+  empDetalhe: { fontSize: 12.5, color: "#171717" },
+  statusBadge: { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999 },
+  statusAtivo: { background: "#fef3c7", color: "#d97706" },
+  statusQuitado: { background: "#dcfce7", color: "#16a34a" },
+  parcelasWrap: { borderTop: "1px solid #f0f0f0", padding: "8px 14px 14px", overflow: "auto" },
+  parcelaBadge: { fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 999 },
+  parcelaBadgePaga: { background: "#dcfce7", color: "#16a34a" },
+  parcelaBadgePendente: { background: "#f0f0f0", color: "#737373" },
 };
