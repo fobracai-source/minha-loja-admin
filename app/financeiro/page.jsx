@@ -860,7 +860,12 @@ function FinanceiroContent() {
       </div>
 
       {detailTransaction && (
-        <TransactionDetailModal transaction={detailTransaction} onClose={() => setDetailTransaction(null)} />
+        <TransactionDetailModal
+          transaction={detailTransaction}
+          chartOfAccounts={chartOfAccounts}
+          onClose={() => setDetailTransaction(null)}
+          onChanged={loadTransactions}
+        />
       )}
     </div>
   );
