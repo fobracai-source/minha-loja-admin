@@ -345,7 +345,7 @@ function FinanceiroContent() {
       query = query.gte("due_date", start).lte("due_date", end);
     }
     const { data: periodTransactions } = await query;
-    const txs = periodTransactions || [];
+    const txs = (periodTransactions || []).filter((t) => t.origin !== "transferencia_banco");
 
     const receitaVendaTxs = txs.filter((t) => t.type === "entrada" && t.category === "RECEITA DE VENDA");
     const outrasReceitasTxs = txs.filter((t) => t.type === "entrada" && t.category !== "RECEITA DE VENDA");
@@ -416,7 +416,7 @@ function FinanceiroContent() {
       .gte("due_date", start)
       .lte("due_date", end);
 
-    const txs = periodTransactions || [];
+    const txs = (periodTransactions || []).filter((t) => t.origin !== "transferencia_banco");
     const receitaVendaTxs = txs.filter((t) => t.type === "entrada" && t.category === "RECEITA DE VENDA");
     const despesasTxs = txs.filter((t) => t.type === "saida");
 
