@@ -57,9 +57,16 @@ function FinanceiroContent() {
   const [peStart, setPeStart] = useState(todayDateInput());
   const [peEnd, setPeEnd] = useState(todayDateInput());
   const [desiredProfit, setDesiredProfit] = useState("");
-  const [expenseCategoryTypes, setExpenseCategoryTypes] = useState({}); // { categoria: 'fixo'|'variavel' }
   const [peLoading, setPeLoading] = useState(false);
   const [peData, setPeData] = useState(null);
+
+  // Plano de Contas
+  const [chartOfAccounts, setChartOfAccounts] = useState([]);
+  const [showAccountForm, setShowAccountForm] = useState(false);
+  const [accountName, setAccountName] = useState("");
+  const [accountType, setAccountType] = useState("despesa");
+  const [accountClassification, setAccountClassification] = useState("variavel");
+  const [savingAccount, setSavingAccount] = useState(false);
 
   const [showForm, setShowForm] = useState(false);
   const [type, setType] = useState("entrada");
@@ -76,27 +83,60 @@ function FinanceiroContent() {
     setLoading(false);
   }
 
-  async function loadExpenseCategoryTypes() {
-    const { data } = await supabase.from("expense_category_types").select("*");
-    const map = {};
-    (data || []).forEach((row) => { map[row.category] = row.cost_type; });
-    setExpenseCategoryTypes(map);
+  async function loadChartOfAccounts() {
+    const { data } = await supabase.from("chart_of_accounts").select("*").order("name");
+    setChartOfAccounts(data || []);
   }
 
-  async function handleSetCategoryType(cat, costType) {
-    setExpenseCategoryTypes((prev) => ({ ...prev, [cat]: costType }));
-    await supabase.from("expense_category_types").upsert({ category: cat, cost_type: costType, updated_at: new Date().toISOString() });
+  async function handleCreateAccount(e) {
+    e.preventDefault();
+    if (!accountName.trim()) return;
+    setSavingAccount(true);
+    await supabase.from("chart_of_accounts").insert({
+      name: accountName.trim().toUpperCase(),
+      type: accountType,
+      classification: accountClassification,
+    });
+    setAccountName(""); setAccountType("despesa"); setAccountClassification("variavel");
+    setShowAccountForm(false);
+    setSavingAccount(false);
+    loadChartOfAccounts();
+  }
+
+  async function handleUpdateAccount(id, field, value) {
+    setChartOfAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, [field]: value } : a)));
+    await supabase.from("chart_of_accounts").update({ [field]: value }).eq("id", id);
   }
 
   useEffect(() => {
     loadTransactions();
-    loadExpenseCategoryTypes();
+    loadChartOfAccounts();
   }, []);
 
+  // Mapas rápidos: nome da conta -> tipo / classificação
+  const accountTypeMap = useMemo(() => {
+    const map = {};
+    chartOfAccounts.forEach((a) => { map[a.name] = a.type; });
+    return map;
+  }, [chartOfAccounts]);
+
+  const accountClassificationMap = useMemo(() => {
+    const map = {};
+    chartOfAccounts.forEach((a) => { map[a.name] = a.classification; });
+    return map;
+  }, [chartOfAccounts]);
+
   const categories = useMemo(
-    () => [...new Set(transactions.map((t) => t.category).filter(Boolean))],
-    [transactions]
+    () => chartOfAccounts.filter((a) => a.active).map((a) => a.name),
+    [chartOfAccounts]
   );
+
+  function handleCategorySelect(catName) {
+    setCategory(catName);
+    const accType = accountTypeMap[catName];
+    if (accType === "receita") setType("entrada");
+    else if (accType === "despesa") setType("saida");
+  }
 
   async function handleCreate(e) {
     e.preventDefault();
@@ -270,7 +310,7 @@ function FinanceiroContent() {
     let despesasVariaveis = 0;
     despesasTxs.forEach((t) => {
       const cat = t.category || "Sem categoria";
-      const costType = expenseCategoryTypes[cat] || "variavel";
+      const costType = accountClassificationMap[cat] || "variavel";
       if (costType === "fixo") despesasFixas += Number(t.amount);
       else despesasVariaveis += Number(t.amount);
     });
@@ -300,7 +340,7 @@ function FinanceiroContent() {
   useEffect(() => {
     if (tab === "equilibrio") calculatePontoEquilibrio();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, pePeriodType, peMonth, peYear, peStart, peEnd, desiredProfit, expenseCategoryTypes]);
+  }, [tab, pePeriodType, peMonth, peYear, peStart, peEnd, desiredProfit, accountClassificationMap]);
 
   function fmt(v) {
     return `R$ ${Number(v).toFixed(2).replace(".", ",")}`;
@@ -316,6 +356,7 @@ function FinanceiroContent() {
         <div style={styles.tabs}>
           <button onClick={() => setTab("contas")} style={{ ...styles.tabButton, ...(tab === "contas" ? styles.tabActive : {}) }}>Contas a Pagar/Receber</button>
           <button onClick={() => setTab("caixa")} style={{ ...styles.tabButton, ...(tab === "caixa" ? styles.tabActive : {}) }}>Caixa</button>
+          <button onClick={() => setTab("plano")} style={{ ...styles.tabButton, ...(tab === "plano" ? styles.tabActive : {}) }}>Plano de Contas</button>
           <button onClick={() => setTab("dre")} style={{ ...styles.tabButton, ...(tab === "dre" ? styles.tabActive : {}) }}>DRE</button>
           <button onClick={() => setTab("equilibrio")} style={{ ...styles.tabButton, ...(tab === "equilibrio" ? styles.tabActive : {}) }}>Ponto de Equilíbrio</button>
         </div>
@@ -352,16 +393,19 @@ function FinanceiroContent() {
               <form onSubmit={handleCreate} style={styles.form}>
                 <div style={styles.row}>
                   <div style={{ flex: 1 }}>
-                    <label style={styles.label}>Tipo</label>
-                    <select value={type} onChange={(e) => setType(e.target.value)} style={styles.input}>
-                      <option value="entrada">Entrada (a receber)</option>
-                      <option value="saida">Saída (a pagar)</option>
+                    <label style={styles.label}>Categoria (Plano de Contas) *</label>
+                    <select value={category} onChange={(e) => handleCategorySelect(e.target.value)} style={styles.input} required>
+                      <option value="">Selecione…</option>
+                      {categories.map((c) => <option key={c} value={c}>{c}</option>)}
                     </select>
                   </div>
                   <div style={{ flex: 1 }}>
-                    <label style={styles.label}>Categoria</label>
-                    <input list="fin-categories" value={category} onChange={(e) => setCategory(e.target.value)} style={styles.input} placeholder="Ex: Fornecedor, Salário" />
-                    <datalist id="fin-categories">{categories.map((c) => <option key={c} value={c} />)}</datalist>
+                    <label style={styles.label}>Tipo (automático pela categoria)</label>
+                    <div style={styles.autoTypeBox}>
+                      <span style={{ ...styles.typeBadge, ...(type === "entrada" ? styles.typeIn : styles.typeOut) }}>
+                        {type === "entrada" ? "Entrada (a receber)" : "Saída (a pagar)"}
+                      </span>
+                    </div>
                   </div>
                 </div>
                 <label style={styles.label}>Descrição *</label>
@@ -376,7 +420,10 @@ function FinanceiroContent() {
                     <input type="date" value={dueDate} onChange={(e) => setDueDate(e.target.value)} style={styles.input} />
                   </div>
                 </div>
-                <button type="submit" style={styles.saveButton} disabled={saving}>{saving ? "Salvando…" : "Criar lançamento"}</button>
+                {categories.length === 0 && (
+                  <p style={styles.warnNote}>Nenhuma conta cadastrada ainda — crie uma na aba "Plano de Contas" primeiro.</p>
+                )}
+                <button type="submit" style={styles.saveButton} disabled={saving || !category}>{saving ? "Salvando…" : "Criar lançamento"}</button>
               </form>
             )}
 
@@ -525,6 +572,105 @@ function FinanceiroContent() {
           </>
         )}
 
+        {tab === "plano" && (
+          <>
+            <p style={styles.dreExplainer}>
+              <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              Cada conta cadastrada aqui vira uma opção de <b>Categoria</b> ao criar um lançamento em
+              "Contas a Pagar/Receber" — e escolher ela já define sozinho se é Entrada ou Saída. A
+              classificação Fixo/Variável é usada no cálculo do Ponto de Equilíbrio.
+            </p>
+
+            <button onClick={() => setShowAccountForm((v) => !v)} style={styles.newButton}>
+              <Plus size={16} /> Nova conta
+            </button>
+
+            {showAccountForm && (
+              <form onSubmit={handleCreateAccount} style={{ ...styles.form, marginTop: 14 }}>
+                <label style={styles.label}>Nome da conta *</label>
+                <input
+                  value={accountName}
+                  onChange={(e) => setAccountName(e.target.value)}
+                  style={styles.input}
+                  placeholder="Ex: ENERGIA, COMISSÃO_VENDA"
+                  required
+                />
+                <div style={styles.row}>
+                  <div style={{ flex: 1 }}>
+                    <label style={styles.label}>Tipo</label>
+                    <select value={accountType} onChange={(e) => setAccountType(e.target.value)} style={styles.input}>
+                      <option value="despesa">Despesa</option>
+                      <option value="receita">Receita</option>
+                    </select>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <label style={styles.label}>Classificação</label>
+                    <select value={accountClassification} onChange={(e) => setAccountClassification(e.target.value)} style={styles.input}>
+                      <option value="fixo">Fixo</option>
+                      <option value="variavel">Variável</option>
+                    </select>
+                  </div>
+                </div>
+                <button type="submit" style={styles.saveButton} disabled={savingAccount}>
+                  {savingAccount ? "Salvando…" : "Cadastrar conta"}
+                </button>
+              </form>
+            )}
+
+            {chartOfAccounts.length === 0 ? (
+              <p style={styles.empty}>Nenhuma conta cadastrada ainda.</p>
+            ) : (
+              <div style={{ ...styles.tableWrap, marginTop: 16 }}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}>Nome da Conta</th>
+                      <th style={styles.th}>Tipo</th>
+                      <th style={styles.th}>Classificação</th>
+                      <th style={styles.th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chartOfAccounts.map((acc) => (
+                      <tr key={acc.id} style={{ ...styles.tr, ...(acc.active === false ? { opacity: 0.5 } : {}) }}>
+                        <td style={styles.td}>{acc.name}</td>
+                        <td style={styles.td}>
+                          <select
+                            value={acc.type}
+                            onChange={(e) => handleUpdateAccount(acc.id, "type", e.target.value)}
+                            style={{ ...styles.inlineSelect, ...(acc.type === "receita" ? styles.typeIn : styles.typeOut) }}
+                          >
+                            <option value="receita">Receita</option>
+                            <option value="despesa">Despesa</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}>
+                          <select
+                            value={acc.classification}
+                            onChange={(e) => handleUpdateAccount(acc.id, "classification", e.target.value)}
+                            style={styles.inlineSelect}
+                          >
+                            <option value="fixo">Fixo</option>
+                            <option value="variavel">Variável</option>
+                          </select>
+                        </td>
+                        <td style={styles.td}>
+                          <button
+                            onClick={() => handleUpdateAccount(acc.id, "active", acc.active === false)}
+                            style={styles.baixaButton}
+                          >
+                            {acc.active === false ? "Ativar" : "Desativar"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
+
         {tab === "dre" && (
           <>
             <div style={styles.filters}>
@@ -647,33 +793,10 @@ function FinanceiroContent() {
               />
             </div>
 
-            {categories.length > 0 && (
-              <div style={styles.classifyBox}>
-                <div style={styles.classifyTitle}>
-                  <Scale size={14} /> Classifique suas categorias de despesa
-                </div>
-                <p style={styles.classifyHelp}>Isso define o que entra como custo fixo ou variável no cálculo.</p>
-                <div style={styles.classifyList}>
-                  {categories.map((cat) => {
-                    const current = expenseCategoryTypes[cat] || "variavel";
-                    return (
-                      <div key={cat} style={styles.classifyRow}>
-                        <span style={styles.classifyCat}>{cat}</span>
-                        <div style={styles.classifyToggle}>
-                          <button
-                            onClick={() => handleSetCategoryType(cat, "fixo")}
-                            style={{ ...styles.classifyButton, ...(current === "fixo" ? styles.classifyButtonActiveFixo : {}) }}
-                          >Fixo</button>
-                          <button
-                            onClick={() => handleSetCategoryType(cat, "variavel")}
-                            style={{ ...styles.classifyButton, ...(current === "variavel" ? styles.classifyButtonActiveVar : {}) }}
-                          >Variável</button>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
+            {categories.length === 0 && (
+              <p style={styles.warnNote}>
+                Nenhuma conta cadastrada no <button onClick={() => setTab("plano")} style={styles.inlineLinkButton}>Plano de Contas</button> ainda — cadastre suas categorias de despesa lá primeiro, marcando cada uma como Fixa ou Variável.
+              </p>
             )}
 
             {peLoading || !peData ? (
@@ -826,4 +949,8 @@ const styles = {
   peResultValue: { fontSize: 24, fontWeight: 800, color: "#14532d" },
   peResultSub: { fontSize: 11, color: "#737373" },
   chartCard: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 16, padding: 20, display: "flex", justifyContent: "center" },
+  autoTypeBox: { border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", background: "#fafafa", display: "flex", alignItems: "center" },
+  warnNote: { fontSize: 12, color: "#d97706", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "9px 12px", marginTop: 10 },
+  inlineLinkButton: { border: "none", background: "none", color: "#171717", fontWeight: 700, textDecoration: "underline", cursor: "pointer", padding: 0, font: "inherit" },
+  inlineSelect: { border: "1px solid #e5e5e5", borderRadius: 8, padding: "5px 8px", fontSize: 12, fontWeight: 600 },
 };
