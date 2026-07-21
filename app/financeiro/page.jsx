@@ -6,7 +6,7 @@ import Sidebar from "../../components/Sidebar";
 import TransactionDetailModal from "../../components/TransactionDetailModal";
 import BreakEvenChart from "../../components/BreakEvenChart";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw } from "lucide-react";
+import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw, PiggyBank } from "lucide-react";
 
 function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
@@ -208,6 +208,82 @@ function FinanceiroContent() {
   const excedenteChequeEspecial = contaBanco && Math.abs(Math.min(contaBanco.saldo, 0)) > contaBanco.limite_cheque_especial
     ? Math.abs(contaBanco.saldo) - contaBanco.limite_cheque_especial
     : 0;
+
+  // ────────────────── ABA INVESTIMENTOS ──────────────────
+  const [aplicacoesLoja, setAplicacoesLoja] = useState([]);
+  const [produtosCaptacao, setProdutosCaptacao] = useState([]);
+  const [investLoading, setInvestLoading] = useState(true);
+  const [showAplicarForm, setShowAplicarForm] = useState(false);
+  const [savingAplicacao, setSavingAplicacao] = useState(false);
+  const [resgatandoId, setResgatandoId] = useState(null);
+  const [mensagemInvest, setMensagemInvest] = useState("");
+  const [produtoId, setProdutoId] = useState("");
+  const [valorAplicar, setValorAplicar] = useState("");
+  const [dataVencimentoAplicacao, setDataVencimentoAplicacao] = useState("");
+
+  async function loadInvestimentos(contaIdParam) {
+    setInvestLoading(true);
+    const [aplicacoes, produtos] = await Promise.all([
+      supabase.from("banco_alegre_aplicacoes").select("*, banco_alegre_produtos_captacao(nome)").eq("conta_id", contaIdParam).order("created_at", { ascending: false }),
+      supabase.from("banco_alegre_produtos_captacao").select("*").eq("ativo", true).order("nome"),
+    ]);
+    setAplicacoesLoja(aplicacoes.data || []);
+    setProdutosCaptacao(produtos.data || []);
+    setInvestLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "investimentos" && contaBanco) loadInvestimentos(contaBanco.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab, contaBanco]);
+
+  const produtoSelecionadoInvest = useMemo(() => produtosCaptacao.find((p) => p.id === produtoId), [produtosCaptacao, produtoId]);
+
+  useEffect(() => {
+    if (produtoSelecionadoInvest && !produtoSelecionadoInvest.liquidez_diaria) {
+      const d = new Date();
+      d.setMonth(d.getMonth() + produtoSelecionadoInvest.prazo_minimo_meses);
+      setDataVencimentoAplicacao(d.toISOString().slice(0, 10));
+    } else {
+      setDataVencimentoAplicacao("");
+    }
+  }, [produtoSelecionadoInvest]);
+
+  async function handleAplicarInvestimento(e) {
+    e.preventDefault();
+    if (!produtoId || !valorAplicar || !contaBanco) return;
+    setSavingAplicacao(true);
+    setMensagemInvest("");
+
+    const { error } = await supabase.rpc("aplicar_investimento", {
+      p_conta_id: contaBanco.id,
+      p_produto_id: produtoId,
+      p_valor: parseFloat(valorAplicar),
+      p_data_vencimento: dataVencimentoAplicacao || null,
+    });
+
+    if (error) {
+      setMensagemInvest(`Erro: ${error.message}`);
+    } else {
+      setProdutoId(""); setValorAplicar(""); setDataVencimentoAplicacao("");
+      setShowAplicarForm(false);
+      loadInvestimentos(contaBanco.id);
+      loadBancoData();
+    }
+    setSavingAplicacao(false);
+  }
+
+  async function handleResgatarInvestimento(id) {
+    if (!confirm("Resgatar essa aplicação vai calcular o rendimento até hoje, descontar o IR (se houver) e creditar o valor líquido na conta do banco. Confirmar?")) return;
+    setResgatandoId(id);
+    const { error } = await supabase.rpc("resgatar_aplicacao", { p_aplicacao_id: id });
+    if (error) alert(`Erro ao resgatar: ${error.message}`);
+    setResgatandoId(null);
+    loadInvestimentos(contaBanco.id);
+    loadBancoData();
+  }
+
+  // ────────────────── FIM ABA INVESTIMENTOS ──────────────────
 
   // ────────────────── FIM ABA BANCOS ──────────────────
 
@@ -484,6 +560,7 @@ function FinanceiroContent() {
           <button onClick={() => setTab("contas")} style={{ ...styles.tabButton, ...(tab === "contas" ? styles.tabActive : {}) }}>Contas a Pagar/Receber</button>
           <button onClick={() => setTab("caixa")} style={{ ...styles.tabButton, ...(tab === "caixa" ? styles.tabActive : {}) }}>Caixa</button>
           <button onClick={() => setTab("bancos")} style={{ ...styles.tabButton, ...(tab === "bancos" ? styles.tabActive : {}) }}>Bancos</button>
+          <button onClick={() => setTab("investimentos")} style={{ ...styles.tabButton, ...(tab === "investimentos" ? styles.tabActive : {}) }}>Investimentos</button>
           <button onClick={() => setTab("plano")} style={{ ...styles.tabButton, ...(tab === "plano" ? styles.tabActive : {}) }}>Plano de Contas</button>
           <button onClick={() => setTab("dre")} style={{ ...styles.tabButton, ...(tab === "dre" ? styles.tabActive : {}) }}>DRE</button>
           <button onClick={() => setTab("equilibrio")} style={{ ...styles.tabButton, ...(tab === "equilibrio" ? styles.tabActive : {}) }}>Ponto de Equilíbrio</button>
@@ -854,6 +931,103 @@ function FinanceiroContent() {
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                )}
+              </>
+            )}
+          </>
+        )}
+
+        {tab === "investimentos" && (
+          <>
+            {!contaBanco ? (
+              <p style={styles.empty}>Abra a aba "Bancos" primeiro para carregar a conta da Minha Loja.</p>
+            ) : (
+              <>
+                <p style={styles.dreExplainer}>
+                  <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                  O rendimento só é calculado no momento do resgate, com capitalização mensal (juros compostos) desde
+                  a data da aplicação. Se o produto não for isento, o Imposto de Renda é descontado automaticamente
+                  sobre o rendimento — nunca sobre o valor aplicado. Aplicar e resgatar aqui move o saldo da conta
+                  no Banco Alegre, o mesmo saldo que aparece na aba Bancos.
+                </p>
+
+                <button onClick={() => setShowAplicarForm((v) => !v)} style={styles.newButton}>
+                  <Plus size={16} /> Nova aplicação
+                </button>
+
+                {mensagemInvest && <p style={styles.errorMsg}>{mensagemInvest}</p>}
+
+                {showAplicarForm && (
+                  <form onSubmit={handleAplicarInvestimento} style={styles.form}>
+                    <label style={styles.label}>Produto *</label>
+                    <select value={produtoId} onChange={(e) => setProdutoId(e.target.value)} style={styles.input} required>
+                      <option value="">Selecione…</option>
+                      {produtosCaptacao.map((p) => <option key={p.id} value={p.id}>{p.nome} — {p.taxa_juros_pct_am}% a.m.</option>)}
+                    </select>
+
+                    {produtoSelecionadoInvest && (
+                      <div style={styles.particularidadesPreview}>
+                        <span><ShieldCheck size={12} /> FGC: {produtoSelecionadoInvest.garantia_fgc ? "Sim" : "Não"}</span>
+                        <span>IR: {produtoSelecionadoInvest.isento_ir ? "Isento" : `${produtoSelecionadoInvest.aliquota_ir_pct}% sobre o rendimento`}</span>
+                        <span>Mínimo: {fmt(produtoSelecionadoInvest.valor_minimo_aplicacao)}</span>
+                        <span>{produtoSelecionadoInvest.liquidez_diaria ? "Liquidez diária" : `Prazo mínimo: ${produtoSelecionadoInvest.prazo_minimo_meses} mês(es)`}</span>
+                      </div>
+                    )}
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Valor a aplicar (R$) *</label>
+                        <input type="number" step="0.01" min="0.01" value={valorAplicar} onChange={(e) => setValorAplicar(e.target.value)} style={styles.input} required />
+                        <span style={styles.fieldHintInline}>Saldo disponível no banco: {fmt(contaBanco.saldo)}</span>
+                      </div>
+                      {produtoSelecionadoInvest && !produtoSelecionadoInvest.liquidez_diaria && (
+                        <div style={{ flex: 1 }}>
+                          <label style={styles.label}>Vencimento (calculado)</label>
+                          <input type="date" value={dataVencimentoAplicacao} onChange={(e) => setDataVencimentoAplicacao(e.target.value)} style={styles.input} />
+                        </div>
+                      )}
+                    </div>
+
+                    <button type="submit" style={styles.saveButton} disabled={savingAplicacao}>{savingAplicacao ? "Aplicando…" : "Confirmar aplicação"}</button>
+                  </form>
+                )}
+
+                {investLoading ? (
+                  <p style={styles.empty}>Carregando…</p>
+                ) : aplicacoesLoja.length === 0 ? (
+                  <p style={styles.empty}>Nenhuma aplicação registrada ainda.</p>
+                ) : (
+                  <div style={styles.list}>
+                    {aplicacoesLoja.map((a) => (
+                      <div key={a.id} style={styles.card}>
+                        <div style={{ padding: 14, display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{ ...styles.iconBox, background: "#f0fdf4", color: "#16a34a" }}><PiggyBank size={16} /></div>
+                          <div style={{ flex: 1 }}>
+                            <div style={styles.empDetalhe}>{a.banco_alegre_produtos_captacao?.nome}</div>
+                            <div style={{ fontSize: 11.5, color: "#a3a3a3", marginTop: 2 }}>
+                              Aplicado em {fmtDate(a.data_aplicacao)} · {fmt(a.valor_aplicado)} · {a.taxa_juros_pct_am}% a.m.
+                              {a.isento_ir ? " · Isento de IR" : ` · IR ${a.aliquota_ir_pct}%`}
+                            </div>
+                          </div>
+                          <span style={{ ...styles.statusBadge, ...(a.status === "Ativa" ? styles.statusAtivo : styles.statusQuitado) }}>{a.status}</span>
+                        </div>
+                        <div style={{ padding: "0 14px 14px" }}>
+                          {a.status === "Ativa" ? (
+                            <button onClick={() => handleResgatarInvestimento(a.id)} disabled={resgatandoId === a.id} style={styles.baixaButton}>
+                              {resgatandoId === a.id ? "Resgatando…" : "Resgatar agora"}
+                            </button>
+                          ) : (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 14, fontSize: 11.5, color: "#737373" }}>
+                              <span>Resgatado em {fmtDate(a.data_resgate)}</span>
+                              <span>Rendimento bruto: {fmt(a.valor_rendimento_bruto)}</span>
+                              <span>IR pago: {fmt(a.valor_ir_pago)}</span>
+                              <span style={{ fontWeight: 700, color: "#16a34a" }}>Líquido creditado: {fmt(a.valor_resgate)}</span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </>
@@ -1244,6 +1418,7 @@ const styles = {
   list: { display: "flex", flexDirection: "column", gap: 10 },
   card: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, overflow: "hidden" },
   cardHeaderButton: { display: "flex", alignItems: "center", gap: 12, width: "100%", padding: 14, background: "none", border: "none", cursor: "pointer" },
+  iconBox: { width: 34, height: 34, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
   empDetalhe: { fontSize: 12.5, color: "#171717" },
   statusBadge: { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999 },
   statusAtivo: { background: "#fef3c7", color: "#d97706" },
@@ -1252,4 +1427,7 @@ const styles = {
   parcelaBadge: { fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 999 },
   parcelaBadgePaga: { background: "#dcfce7", color: "#16a34a" },
   parcelaBadgePendente: { background: "#f0f0f0", color: "#737373" },
+  errorMsg: { color: "#dc2626", fontSize: 12.5, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "8px 12px", marginBottom: 14 },
+  particularidadesPreview: { display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, color: "#525252", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "8px 10px", marginTop: 10 },
+  fieldHintInline: { fontSize: 10.5, color: "#a3a3a3", marginTop: 3, display: "block" },
 };
