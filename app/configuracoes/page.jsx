@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
-import { CreditCard } from "lucide-react";
+import { CreditCard, Package2, Info } from "lucide-react";
 
 const PAYMENT_LABELS = {
   cod: { label: "Pagar na Entrega", description: "Dinheiro, débito ou crédito com o entregador" },
@@ -13,14 +13,26 @@ const PAYMENT_LABELS = {
   pagbank: { label: "PagBank", description: "Ainda não implementado" },
 };
 
+const MODULE_LABELS = {
+  compras_suprimentos: {
+    label: "Compras e Suprimentos",
+    description: "Quando ativo, o estoque e o custo dos produtos passam a ser controlados por Notas de Compra, e não mais editados direto no cadastro do produto.",
+  },
+};
+
 function ConfiguracoesContent() {
   const [settings, setSettings] = useState([]);
+  const [moduleSettings, setModuleSettings] = useState([]);
   const [loading, setLoading] = useState(true);
 
   async function loadSettings() {
     setLoading(true);
-    const { data } = await supabase.from("payment_settings").select("*").order("id");
-    setSettings(data || []);
+    const [payments, modules] = await Promise.all([
+      supabase.from("payment_settings").select("*").order("id"),
+      supabase.from("module_settings").select("*").order("id"),
+    ]);
+    setSettings(payments.data || []);
+    setModuleSettings(modules.data || []);
     setLoading(false);
   }
 
@@ -28,11 +40,26 @@ function ConfiguracoesContent() {
     loadSettings();
   }, []);
 
-  async function handleToggle(id, currentEnabled) {
+  async function handleTogglePayment(id, currentEnabled) {
     setSettings((prev) => prev.map((s) => (s.id === id ? { ...s, enabled: !currentEnabled } : s)));
     await supabase
       .from("payment_settings")
       .update({ enabled: !currentEnabled, updated_at: new Date().toISOString() })
+      .eq("id", id);
+  }
+
+  async function handleToggleModule(id, currentEnabled) {
+    const ativando = !currentEnabled;
+    if (ativando) {
+      const confirmou = confirm(
+        "Ao ativar Compras e Suprimentos, o estoque e o custo dos produtos passam a ser controlados só por Notas de Compra. Os campos ficam bloqueados para edição direta no cadastro do produto. Deseja continuar?"
+      );
+      if (!confirmou) return;
+    }
+    setModuleSettings((prev) => prev.map((m) => (m.id === id ? { ...m, enabled: ativando } : m)));
+    await supabase
+      .from("module_settings")
+      .update({ enabled: ativando, updated_at: new Date().toISOString() })
       .eq("id", id);
   }
 
@@ -65,7 +92,7 @@ function ConfiguracoesContent() {
                     <div style={styles.rowDescription}>{info.description}</div>
                   </div>
                   <button
-                    onClick={() => handleToggle(s.id, s.enabled)}
+                    onClick={() => handleTogglePayment(s.id, s.enabled)}
                     style={{ ...styles.toggle, ...(s.enabled ? styles.toggleOn : styles.toggleOff) }}
                   >
                     <span style={{ ...styles.toggleKnob, ...(s.enabled ? styles.toggleKnobOn : {}) }} />
@@ -75,6 +102,43 @@ function ConfiguracoesContent() {
             })}
           </div>
         )}
+
+        <h2 style={{ ...styles.sectionTitle, marginTop: 28 }}>Módulos do sistema</h2>
+        <p style={styles.sectionHelp}>
+          Alguns módulos mudam o comportamento de outras telas do ERP quando ativados.
+        </p>
+
+        {loading ? (
+          <p style={{ color: "#a3a3a3", fontSize: 13 }}>Carregando…</p>
+        ) : (
+          <div style={styles.list}>
+            {moduleSettings.map((m) => {
+              const info = MODULE_LABELS[m.id] || { label: m.id, description: "" };
+              return (
+                <div key={m.id} style={styles.row}>
+                  <div style={styles.rowIcon}>
+                    <Package2 size={16} color="#171717" />
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={styles.rowLabel}>{info.label}</div>
+                    <div style={styles.rowDescription}>{info.description}</div>
+                  </div>
+                  <button
+                    onClick={() => handleToggleModule(m.id, m.enabled)}
+                    style={{ ...styles.toggle, ...(m.enabled ? styles.toggleOn : styles.toggleOff) }}
+                  >
+                    <span style={{ ...styles.toggleKnob, ...(m.enabled ? styles.toggleKnobOn : {}) }} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <p style={styles.infoNote}>
+          <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+          Módulos ativados aqui afetam imediatamente outras telas do painel (por exemplo, Produtos).
+        </p>
       </div>
     </div>
   );
@@ -116,4 +180,8 @@ const styles = {
     background: "#fff", transition: "left 0.15s",
   },
   toggleKnobOn: { left: 21 },
+  infoNote: {
+    display: "flex", gap: 6, fontSize: 12, color: "#737373", background: "#fafafa",
+    border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", marginTop: 18,
+  },
 };
