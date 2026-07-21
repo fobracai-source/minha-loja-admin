@@ -5,8 +5,7 @@ import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
 import {
-  FileText, Landmark, ShieldCheck, MessageSquareWarning, BadgeCheck,
-  AlertTriangle, Info,
+  FileText, Landmark, ShieldCheck, MessageSquareWarning, BadgeCheck, Plus,
 } from "lucide-react";
 
 function todayDateInput() {
@@ -25,12 +24,28 @@ function fmtMoney(v) {
 
 function daysUntil(d) {
   if (!d) return null;
-  const diff = Math.ceil((new Date(d + "T00:00:00") - new Date(todayDateInput() + "T00:00:00")) / 86400000);
-  return diff;
+  return Math.ceil((new Date(d + "T00:00:00") - new Date(todayDateInput() + "T00:00:00")) / 86400000);
+}
+
+// Opções de status por área — usadas no formulário e no seletor rápido da lista
+const STATUS_OPTIONS = {
+  contratos: ["Vigente", "Encerrado", "Renovação Pendente", "Cancelado"],
+  fiscal: ["Pendente", "Pago", "Atrasado"],
+  lgpd: ["Recebida", "Em Andamento", "Concluída", "Negada"],
+  reclamacoes: ["Aberta", "Em Análise", "Respondida", "Resolvida", "Escalada"],
+};
+
+function statusBadgeStyle(status) {
+  const positive = ["Vigente", "Pago", "Concluída", "Resolvida"];
+  const negative = ["Cancelado", "Atrasado", "Negada", "Escalada"];
+  const base = { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999, border: "none", cursor: "pointer" };
+  if (positive.includes(status)) return { ...base, background: "#dcfce7", color: "#16a34a" };
+  if (negative.includes(status)) return { ...base, background: "#fee2e2", color: "#dc2626" };
+  return { ...base, background: "#f0f0f0", color: "#737373" };
 }
 
 function JuridicoContent() {
-  const [tab, setTab] = useState("contratos"); // contratos | fiscal | lgpd | reclamacoes | documentos
+  const [tab, setTab] = useState("contratos");
   const [loading, setLoading] = useState(true);
 
   const [contratos, setContratos] = useState([]);
@@ -59,9 +74,7 @@ function JuridicoContent() {
     setLoading(false);
   }
 
-  useEffect(() => {
-    loadAll();
-  }, []);
+  useEffect(() => { loadAll(); }, []);
 
   const employeeMap = useMemo(() => {
     const map = {};
@@ -69,7 +82,202 @@ function JuridicoContent() {
     return map;
   }, [employees]);
 
-  // ── Indicadores de topo (visão geral, cruzando as 5 áreas) ──
+  async function handleUpdateStatus(table, id, newStatus) {
+    await supabase.from(table).update({ status: newStatus, updated_at: new Date().toISOString() }).eq("id", id);
+    loadAll();
+  }
+
+  // ────────────────── FORMULÁRIO: CONTRATOS ──────────────────
+  const [showContratoForm, setShowContratoForm] = useState(false);
+  const [savingContrato, setSavingContrato] = useState(false);
+  const [ctTipo, setCtTipo] = useState("fornecedor");
+  const [ctTitulo, setCtTitulo] = useState("");
+  const [ctParteNome, setCtParteNome] = useState("");
+  const [ctParteDocumento, setCtParteDocumento] = useState("");
+  const [ctFuncionarioId, setCtFuncionarioId] = useState("");
+  const [ctDataInicio, setCtDataInicio] = useState(todayDateInput());
+  const [ctDataFim, setCtDataFim] = useState("");
+  const [ctValor, setCtValor] = useState("");
+  const [ctObservacoes, setCtObservacoes] = useState("");
+
+  function resetContratoForm() {
+    setCtTipo("fornecedor"); setCtTitulo(""); setCtParteNome(""); setCtParteDocumento("");
+    setCtFuncionarioId(""); setCtDataInicio(todayDateInput()); setCtDataFim(""); setCtValor(""); setCtObservacoes("");
+  }
+
+  async function handleCreateContrato(e) {
+    e.preventDefault();
+    if (!ctTitulo.trim() || !ctDataInicio) return;
+    if (ctTipo === "funcionario" && !ctFuncionarioId) return;
+    if (ctTipo !== "funcionario" && !ctParteNome.trim()) return;
+
+    setSavingContrato(true);
+    const funcionarioNome = ctTipo === "funcionario" ? (employeeMap[ctFuncionarioId] || "") : ctParteNome.trim();
+
+    await supabase.from("juridico_contratos").insert({
+      tipo_contrato: ctTipo,
+      titulo: ctTitulo.trim(),
+      parte_nome: funcionarioNome,
+      parte_documento: ctParteDocumento.trim() || null,
+      funcionario_id: ctTipo === "funcionario" ? ctFuncionarioId : null,
+      data_inicio: ctDataInicio,
+      data_fim: ctDataFim || null,
+      valor: ctValor ? parseFloat(ctValor) : null,
+      observacoes: ctObservacoes.trim() || null,
+      status: "Vigente",
+    });
+
+    resetContratoForm();
+    setShowContratoForm(false);
+    setSavingContrato(false);
+    loadAll();
+  }
+
+  // ────────────────── FORMULÁRIO: OBRIGAÇÕES FISCAIS ──────────────────
+  const [showFiscalForm, setShowFiscalForm] = useState(false);
+  const [savingFiscal, setSavingFiscal] = useState(false);
+  const [fsNome, setFsNome] = useState("");
+  const [fsTipo, setFsTipo] = useState("Imposto");
+  const [fsCompetencia, setFsCompetencia] = useState(todayDateInput().slice(0, 7)); // yyyy-mm
+  const [fsVencimento, setFsVencimento] = useState(todayDateInput());
+  const [fsValorEstimado, setFsValorEstimado] = useState("");
+  const [fsObservacoes, setFsObservacoes] = useState("");
+
+  function resetFiscalForm() {
+    setFsNome(""); setFsTipo("Imposto"); setFsCompetencia(todayDateInput().slice(0, 7));
+    setFsVencimento(todayDateInput()); setFsValorEstimado(""); setFsObservacoes("");
+  }
+
+  async function handleCreateFiscal(e) {
+    e.preventDefault();
+    if (!fsNome.trim() || !fsVencimento) return;
+    setSavingFiscal(true);
+
+    // Converte "2026-07" para "07/2026", formato usado na tela
+    const [ano, mes] = fsCompetencia.split("-");
+    const competenciaFormatada = `${mes}/${ano}`;
+
+    await supabase.from("juridico_obrigacoes_fiscais").insert({
+      nome: fsNome.trim(),
+      tipo: fsTipo,
+      competencia: competenciaFormatada,
+      vencimento: fsVencimento,
+      valor_estimado: fsValorEstimado ? parseFloat(fsValorEstimado) : null,
+      observacoes: fsObservacoes.trim() || null,
+      status: "Pendente",
+    });
+
+    resetFiscalForm();
+    setShowFiscalForm(false);
+    setSavingFiscal(false);
+    loadAll();
+  }
+
+  // ────────────────── FORMULÁRIO: LGPD ──────────────────
+  const [showLgpdForm, setShowLgpdForm] = useState(false);
+  const [savingLgpd, setSavingLgpd] = useState(false);
+  const [lgClienteNome, setLgClienteNome] = useState("");
+  const [lgClienteContato, setLgClienteContato] = useState("");
+  const [lgTipo, setLgTipo] = useState("Acesso aos Dados");
+  const [lgDataSolicitacao, setLgDataSolicitacao] = useState(todayDateInput());
+
+  function resetLgpdForm() {
+    setLgClienteNome(""); setLgClienteContato(""); setLgTipo("Acesso aos Dados"); setLgDataSolicitacao(todayDateInput());
+  }
+
+  async function handleCreateLgpd(e) {
+    e.preventDefault();
+    if (!lgClienteNome.trim() || !lgClienteContato.trim()) return;
+    setSavingLgpd(true);
+
+    await supabase.from("juridico_lgpd_solicitacoes").insert({
+      cliente_nome: lgClienteNome.trim(),
+      cliente_contato: lgClienteContato.trim(),
+      tipo_solicitacao: lgTipo,
+      data_solicitacao: lgDataSolicitacao,
+      status: "Recebida",
+      // prazo_resposta é calculado sozinho pelo banco (data_solicitacao + 15 dias)
+    });
+
+    resetLgpdForm();
+    setShowLgpdForm(false);
+    setSavingLgpd(false);
+    loadAll();
+  }
+
+  // ────────────────── FORMULÁRIO: RECLAMAÇÕES ──────────────────
+  const [showReclamacaoForm, setShowReclamacaoForm] = useState(false);
+  const [savingReclamacao, setSavingReclamacao] = useState(false);
+  const [rcClienteNome, setRcClienteNome] = useState("");
+  const [rcClienteContato, setRcClienteContato] = useState("");
+  const [rcCanal, setRcCanal] = useState("Procon");
+  const [rcProtocolo, setRcProtocolo] = useState("");
+  const [rcDescricao, setRcDescricao] = useState("");
+  const [rcDataReclamacao, setRcDataReclamacao] = useState(todayDateInput());
+  const [rcPrazoResposta, setRcPrazoResposta] = useState("");
+
+  function resetReclamacaoForm() {
+    setRcClienteNome(""); setRcClienteContato(""); setRcCanal("Procon"); setRcProtocolo("");
+    setRcDescricao(""); setRcDataReclamacao(todayDateInput()); setRcPrazoResposta("");
+  }
+
+  async function handleCreateReclamacao(e) {
+    e.preventDefault();
+    if (!rcClienteNome.trim() || !rcDescricao.trim()) return;
+    setSavingReclamacao(true);
+
+    await supabase.from("juridico_reclamacoes").insert({
+      cliente_nome: rcClienteNome.trim(),
+      cliente_contato: rcClienteContato.trim() || null,
+      canal: rcCanal,
+      numero_protocolo: rcProtocolo.trim() || null,
+      descricao: rcDescricao.trim(),
+      data_reclamacao: rcDataReclamacao,
+      prazo_resposta: rcPrazoResposta || null,
+      status: "Aberta",
+    });
+
+    resetReclamacaoForm();
+    setShowReclamacaoForm(false);
+    setSavingReclamacao(false);
+    loadAll();
+  }
+
+  // ────────────────── FORMULÁRIO: DOCUMENTOS ──────────────────
+  const [showDocumentoForm, setShowDocumentoForm] = useState(false);
+  const [savingDocumento, setSavingDocumento] = useState(false);
+  const [dcNome, setDcNome] = useState("");
+  const [dcTipo, setDcTipo] = useState("Cadastro");
+  const [dcNumero, setDcNumero] = useState("");
+  const [dcOrgao, setDcOrgao] = useState("");
+  const [dcDataEmissao, setDcDataEmissao] = useState("");
+  const [dcDataValidade, setDcDataValidade] = useState("");
+
+  function resetDocumentoForm() {
+    setDcNome(""); setDcTipo("Cadastro"); setDcNumero(""); setDcOrgao(""); setDcDataEmissao(""); setDcDataValidade("");
+  }
+
+  async function handleCreateDocumento(e) {
+    e.preventDefault();
+    if (!dcNome.trim()) return;
+    setSavingDocumento(true);
+
+    await supabase.from("juridico_documentos").insert({
+      nome: dcNome.trim(),
+      tipo: dcTipo,
+      numero_documento: dcNumero.trim() || null,
+      orgao_emissor: dcOrgao.trim() || null,
+      data_emissao: dcDataEmissao || null,
+      data_validade: dcDataValidade || null,
+    });
+
+    resetDocumentoForm();
+    setShowDocumentoForm(false);
+    setSavingDocumento(false);
+    loadAll();
+  }
+
+  // ────────────────── INDICADORES DE TOPO ──────────────────
   const obrigacoesPendentes = obrigacoes.filter((o) => o.status !== "Pago");
   const obrigacoesPendentesValor = obrigacoesPendentes.reduce((s, o) => s + Number(o.valor_estimado || 0), 0);
   const documentosVencendo = documentos.filter((d) => {
@@ -77,7 +285,7 @@ function JuridicoContent() {
     return dias !== null && dias <= 30;
   });
   const lgpdEstourados = lgpd.filter((l) => l.status !== "Concluída" && daysUntil(l.prazo_resposta) !== null && daysUntil(l.prazo_resposta) < 0);
-  const reclamacoesAbertas = reclamacoes.filter((r) => !["Resolvida"].includes(r.status));
+  const reclamacoesAbertas = reclamacoes.filter((r) => r.status !== "Resolvida");
 
   return (
     <div>
@@ -86,7 +294,6 @@ function JuridicoContent() {
         <h1 style={styles.title}>Jurídico e Fiscal</h1>
         <p style={styles.subtitle}>Contratos, obrigações fiscais, LGPD, reclamações formais e documentos da empresa</p>
 
-        {/* Cards de visão geral — cruzam as 5 áreas de uma vez */}
         <div style={styles.statsRow}>
           <div style={{ ...styles.statCard, ...(obrigacoesPendentes.length > 0 ? styles.statCardAlert : {}) }}>
             <div style={{ ...styles.statIcon, background: "#fef3c7" }}><Landmark size={16} color="#d97706" /></div>
@@ -134,9 +341,73 @@ function JuridicoContent() {
               <>
                 <p style={styles.explainer}>
                   <FileText size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                  Contratos com fornecedores, clientes e funcionários. Quando o tipo é "funcionário", o
-                  nome vem direto do cadastro do RH — cadastre a pessoa lá primeiro.
+                  Contratos com fornecedores, clientes e funcionários. Quando o tipo é "funcionário", escolha
+                  a pessoa direto do cadastro do RH.
                 </p>
+
+                <button onClick={() => setShowContratoForm((v) => !v)} style={styles.newButton}>
+                  <Plus size={16} /> Novo contrato
+                </button>
+
+                {showContratoForm && (
+                  <form onSubmit={handleCreateContrato} style={styles.form}>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Tipo *</label>
+                        <select value={ctTipo} onChange={(e) => setCtTipo(e.target.value)} style={styles.input}>
+                          <option value="fornecedor">Fornecedor</option>
+                          <option value="cliente">Cliente</option>
+                          <option value="funcionario">Funcionário</option>
+                          <option value="outro">Outro</option>
+                        </select>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Título *</label>
+                        <input value={ctTitulo} onChange={(e) => setCtTitulo(e.target.value)} style={styles.input} placeholder="Ex: Contrato de fornecimento" required />
+                      </div>
+                    </div>
+
+                    {ctTipo === "funcionario" ? (
+                      <>
+                        <label style={styles.label}>Funcionário (vem do RH) *</label>
+                        <select value={ctFuncionarioId} onChange={(e) => setCtFuncionarioId(e.target.value)} style={styles.input} required>
+                          <option value="">Selecione…</option>
+                          {employees.map((emp) => <option key={emp.id} value={emp.id}>{emp.name} — {emp.department}</option>)}
+                        </select>
+                        {employees.length === 0 && <p style={styles.warnNote}>Nenhum funcionário cadastrado no RH ainda.</p>}
+                      </>
+                    ) : (
+                      <>
+                        <label style={styles.label}>Nome da parte *</label>
+                        <input value={ctParteNome} onChange={(e) => setCtParteNome(e.target.value)} style={styles.input} required />
+                      </>
+                    )}
+
+                    <label style={styles.label}>CPF/CNPJ</label>
+                    <input value={ctParteDocumento} onChange={(e) => setCtParteDocumento(e.target.value)} style={styles.input} />
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Início *</label>
+                        <input type="date" value={ctDataInicio} onChange={(e) => setCtDataInicio(e.target.value)} style={styles.input} required />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Fim (vazio = indeterminado)</label>
+                        <input type="date" value={ctDataFim} onChange={(e) => setCtDataFim(e.target.value)} style={styles.input} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Valor (R$)</label>
+                        <input type="number" step="0.01" min="0" value={ctValor} onChange={(e) => setCtValor(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <label style={styles.label}>Observações</label>
+                    <textarea value={ctObservacoes} onChange={(e) => setCtObservacoes(e.target.value)} style={{ ...styles.input, minHeight: 60 }} />
+
+                    <button type="submit" style={styles.saveButton} disabled={savingContrato}>{savingContrato ? "Salvando…" : "Cadastrar contrato"}</button>
+                  </form>
+                )}
+
                 {contratos.length === 0 ? (
                   <p style={styles.empty}>Nenhum contrato cadastrado ainda.</p>
                 ) : (
@@ -170,7 +441,11 @@ function JuridicoContent() {
                                 {vencendo && <span style={styles.overdueTag}> · vence em {dias}d</span>}
                               </td>
                               <td style={styles.td}>{fmtMoney(c.valor)}</td>
-                              <td style={styles.td}><span style={statusBadgeStyle(c.status)}>{c.status}</span></td>
+                              <td style={styles.td}>
+                                <select value={c.status} onChange={(e) => handleUpdateStatus("juridico_contratos", c.id, e.target.value)} style={statusBadgeStyle(c.status)}>
+                                  {STATUS_OPTIONS.contratos.map((s) => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                              </td>
                             </tr>
                           );
                         })}
@@ -185,9 +460,52 @@ function JuridicoContent() {
               <>
                 <p style={styles.explainer}>
                   <Landmark size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                  Ao cadastrar uma obrigação fiscal aqui, uma conta a pagar é criada automaticamente
-                  no Financeiro, na categoria "IMPOSTOS E TAXAS".
+                  Ao cadastrar, uma conta a pagar é criada automaticamente no Financeiro, categoria "IMPOSTOS E TAXAS".
                 </p>
+
+                <button onClick={() => setShowFiscalForm((v) => !v)} style={styles.newButton}>
+                  <Plus size={16} /> Nova obrigação fiscal
+                </button>
+
+                {showFiscalForm && (
+                  <form onSubmit={handleCreateFiscal} style={styles.form}>
+                    <label style={styles.label}>Nome *</label>
+                    <input value={fsNome} onChange={(e) => setFsNome(e.target.value)} style={styles.input} placeholder="Ex: DAS - Simples Nacional" required />
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Tipo</label>
+                        <select value={fsTipo} onChange={(e) => setFsTipo(e.target.value)} style={styles.input}>
+                          <option value="Imposto">Imposto</option>
+                          <option value="Taxa">Taxa</option>
+                          <option value="Declaração">Declaração</option>
+                          <option value="Contribuição">Contribuição</option>
+                        </select>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Competência (mês de referência) *</label>
+                        <input type="month" value={fsCompetencia} onChange={(e) => setFsCompetencia(e.target.value)} style={styles.input} required />
+                      </div>
+                    </div>
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Vencimento *</label>
+                        <input type="date" value={fsVencimento} onChange={(e) => setFsVencimento(e.target.value)} style={styles.input} required />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Valor estimado (R$)</label>
+                        <input type="number" step="0.01" min="0" value={fsValorEstimado} onChange={(e) => setFsValorEstimado(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <label style={styles.label}>Observações</label>
+                    <textarea value={fsObservacoes} onChange={(e) => setFsObservacoes(e.target.value)} style={{ ...styles.input, minHeight: 60 }} />
+
+                    <button type="submit" style={styles.saveButton} disabled={savingFiscal}>{savingFiscal ? "Salvando…" : "Cadastrar obrigação"}</button>
+                  </form>
+                )}
+
                 {obrigacoes.length === 0 ? (
                   <p style={styles.empty}>Nenhuma obrigação fiscal cadastrada ainda.</p>
                 ) : (
@@ -211,7 +529,11 @@ function JuridicoContent() {
                             <td style={styles.td}>{o.competencia}</td>
                             <td style={styles.td}>{fmtDate(o.vencimento)}</td>
                             <td style={styles.td}>{fmtMoney(o.valor_estimado)}</td>
-                            <td style={styles.td}><span style={statusBadgeStyle(o.status)}>{o.status}</span></td>
+                            <td style={styles.td}>
+                              <select value={o.status} onChange={(e) => handleUpdateStatus("juridico_obrigacoes_fiscais", o.id, e.target.value)} style={statusBadgeStyle(o.status)}>
+                                {STATUS_OPTIONS.fiscal.map((s) => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -225,9 +547,46 @@ function JuridicoContent() {
               <>
                 <p style={styles.explainer}>
                   <ShieldCheck size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                  Solicitações de clientes sobre os próprios dados (acesso, correção, exclusão). O prazo
-                  padrão é de 15 dias a partir do pedido.
+                  Solicitações de clientes sobre os próprios dados. O prazo de resposta (15 dias) é calculado automaticamente.
                 </p>
+
+                <button onClick={() => setShowLgpdForm((v) => !v)} style={styles.newButton}>
+                  <Plus size={16} /> Nova solicitação
+                </button>
+
+                {showLgpdForm && (
+                  <form onSubmit={handleCreateLgpd} style={styles.form}>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Nome do cliente *</label>
+                        <input value={lgClienteNome} onChange={(e) => setLgClienteNome(e.target.value)} style={styles.input} required />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Contato (telefone/e-mail) *</label>
+                        <input value={lgClienteContato} onChange={(e) => setLgClienteContato(e.target.value)} style={styles.input} required />
+                      </div>
+                    </div>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Tipo de solicitação</label>
+                        <select value={lgTipo} onChange={(e) => setLgTipo(e.target.value)} style={styles.input}>
+                          <option value="Acesso aos Dados">Acesso aos Dados</option>
+                          <option value="Correção">Correção</option>
+                          <option value="Exclusão">Exclusão</option>
+                          <option value="Portabilidade">Portabilidade</option>
+                          <option value="Revogação de Consentimento">Revogação de Consentimento</option>
+                        </select>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Data da solicitação</label>
+                        <input type="date" value={lgDataSolicitacao} onChange={(e) => setLgDataSolicitacao(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <button type="submit" style={styles.saveButton} disabled={savingLgpd}>{savingLgpd ? "Salvando…" : "Registrar solicitação"}</button>
+                  </form>
+                )}
+
                 {lgpd.length === 0 ? (
                   <p style={styles.empty}>Nenhuma solicitação LGPD registrada ainda.</p>
                 ) : (
@@ -254,7 +613,11 @@ function JuridicoContent() {
                                 {fmtDate(l.prazo_resposta)}
                                 {estourado && <span style={styles.overdueTag}> · prazo estourado</span>}
                               </td>
-                              <td style={styles.td}><span style={statusBadgeStyle(l.status)}>{l.status}</span></td>
+                              <td style={styles.td}>
+                                <select value={l.status} onChange={(e) => handleUpdateStatus("juridico_lgpd_solicitacoes", l.id, e.target.value)} style={statusBadgeStyle(l.status)}>
+                                  {STATUS_OPTIONS.lgpd.map((s) => <option key={s} value={s}>{s}</option>)}
+                                </select>
+                              </td>
                             </tr>
                           );
                         })}
@@ -269,9 +632,59 @@ function JuridicoContent() {
               <>
                 <p style={styles.explainer}>
                   <MessageSquareWarning size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                  Reclamações formais (Procon, Reclame Aqui, judicial) — diferente de um chamado comum
-                  do SAC. A ligação automática com o SAC entra numa próxima etapa.
+                  Reclamações formais (Procon, Reclame Aqui, judicial) — diferente de um chamado comum do SAC.
                 </p>
+
+                <button onClick={() => setShowReclamacaoForm((v) => !v)} style={styles.newButton}>
+                  <Plus size={16} /> Nova reclamação
+                </button>
+
+                {showReclamacaoForm && (
+                  <form onSubmit={handleCreateReclamacao} style={styles.form}>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Nome do cliente *</label>
+                        <input value={rcClienteNome} onChange={(e) => setRcClienteNome(e.target.value)} style={styles.input} required />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Contato</label>
+                        <input value={rcClienteContato} onChange={(e) => setRcClienteContato(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Canal</label>
+                        <select value={rcCanal} onChange={(e) => setRcCanal(e.target.value)} style={styles.input}>
+                          <option value="Procon">Procon</option>
+                          <option value="Reclame Aqui">Reclame Aqui</option>
+                          <option value="Judicial">Judicial</option>
+                          <option value="Outro">Outro</option>
+                        </select>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Nº do protocolo</label>
+                        <input value={rcProtocolo} onChange={(e) => setRcProtocolo(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <label style={styles.label}>Descrição *</label>
+                    <textarea value={rcDescricao} onChange={(e) => setRcDescricao(e.target.value)} style={{ ...styles.input, minHeight: 70 }} required />
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Data da reclamação</label>
+                        <input type="date" value={rcDataReclamacao} onChange={(e) => setRcDataReclamacao(e.target.value)} style={styles.input} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Prazo de resposta (do órgão)</label>
+                        <input type="date" value={rcPrazoResposta} onChange={(e) => setRcPrazoResposta(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <button type="submit" style={styles.saveButton} disabled={savingReclamacao}>{savingReclamacao ? "Salvando…" : "Registrar reclamação"}</button>
+                  </form>
+                )}
+
                 {reclamacoes.length === 0 ? (
                   <p style={styles.empty}>Nenhuma reclamação formal registrada ainda.</p>
                 ) : (
@@ -295,7 +708,11 @@ function JuridicoContent() {
                             <td style={styles.td}>{r.numero_protocolo || "—"}</td>
                             <td style={styles.td}>{fmtDate(r.data_reclamacao)}</td>
                             <td style={styles.td}>{fmtDate(r.prazo_resposta)}</td>
-                            <td style={styles.td}><span style={statusBadgeStyle(r.status)}>{r.status}</span></td>
+                            <td style={styles.td}>
+                              <select value={r.status} onChange={(e) => handleUpdateStatus("juridico_reclamacoes", r.id, e.target.value)} style={statusBadgeStyle(r.status)}>
+                                {STATUS_OPTIONS.reclamacoes.map((s) => <option key={s} value={s}>{s}</option>)}
+                              </select>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -309,9 +726,57 @@ function JuridicoContent() {
               <>
                 <p style={styles.explainer}>
                   <BadgeCheck size={13} style={{ flexShrink: 0, marginTop: 1 }} />
-                  CNPJ, alvará e certidões da empresa. Documentos vencendo em até 30 dias aparecem
-                  destacados aqui e no card de alerta no topo da página.
+                  CNPJ, alvará e certidões da empresa. Documentos vencendo em até 30 dias aparecem destacados aqui e no card do topo.
                 </p>
+
+                <button onClick={() => setShowDocumentoForm((v) => !v)} style={styles.newButton}>
+                  <Plus size={16} /> Novo documento
+                </button>
+
+                {showDocumentoForm && (
+                  <form onSubmit={handleCreateDocumento} style={styles.form}>
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Nome *</label>
+                        <input value={dcNome} onChange={(e) => setDcNome(e.target.value)} style={styles.input} placeholder="Ex: Alvará de Funcionamento" required />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Tipo</label>
+                        <select value={dcTipo} onChange={(e) => setDcTipo(e.target.value)} style={styles.input}>
+                          <option value="Cadastro">Cadastro</option>
+                          <option value="Licença">Licença</option>
+                          <option value="Certidão">Certidão</option>
+                          <option value="Outro">Outro</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Nº do documento</label>
+                        <input value={dcNumero} onChange={(e) => setDcNumero(e.target.value)} style={styles.input} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Órgão emissor</label>
+                        <input value={dcOrgao} onChange={(e) => setDcOrgao(e.target.value)} style={styles.input} placeholder="Ex: Prefeitura" />
+                      </div>
+                    </div>
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Data de emissão</label>
+                        <input type="date" value={dcDataEmissao} onChange={(e) => setDcDataEmissao(e.target.value)} style={styles.input} />
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Validade (vazio = sem validade)</label>
+                        <input type="date" value={dcDataValidade} onChange={(e) => setDcDataValidade(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <button type="submit" style={styles.saveButton} disabled={savingDocumento}>{savingDocumento ? "Salvando…" : "Cadastrar documento"}</button>
+                  </form>
+                )}
+
                 {documentos.length === 0 ? (
                   <p style={styles.empty}>Nenhum documento cadastrado ainda.</p>
                 ) : (
@@ -358,15 +823,6 @@ function JuridicoContent() {
   );
 }
 
-function statusBadgeStyle(status) {
-  const positive = ["Vigente", "Pago", "Concluída", "Resolvida"];
-  const negative = ["Cancelado", "Atrasado", "Negada", "Escalada"];
-  const base = { fontSize: 11, fontWeight: 600, padding: "3px 8px", borderRadius: 999 };
-  if (positive.includes(status)) return { ...base, background: "#dcfce7", color: "#16a34a" };
-  if (negative.includes(status)) return { ...base, background: "#fee2e2", color: "#dc2626" };
-  return { ...base, background: "#f0f0f0", color: "#737373" };
-}
-
 export default function JuridicoPage() {
   return (
     <AuthGate>
@@ -397,4 +853,11 @@ const styles = {
   td: { padding: "10px 14px", fontSize: 13, verticalAlign: "middle" },
   subtext: { fontSize: 11, color: "#a3a3a3" },
   overdueTag: { color: "#dc2626", fontWeight: 700, fontSize: 11 },
+  newButton: { display: "flex", alignItems: "center", gap: 6, background: "#171717", color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer", marginBottom: 14 },
+  form: { background: "#fff", border: "1px solid #e5e5e5", borderRadius: 14, padding: 16, marginBottom: 16, display: "flex", flexDirection: "column", maxWidth: 560 },
+  row: { display: "flex", gap: 12 },
+  label: { fontSize: 12, fontWeight: 600, color: "#525252", marginBottom: 4, marginTop: 12, display: "block" },
+  input: { border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", outline: "none", width: "100%", font: "inherit" },
+  saveButton: { border: "none", background: "#171717", color: "#fff", borderRadius: 10, padding: "11px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer", marginTop: 16 },
+  warnNote: { fontSize: 12, color: "#d97706", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "9px 12px", marginTop: 10 },
 };
