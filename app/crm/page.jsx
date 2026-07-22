@@ -5,7 +5,7 @@ import Link from "next/link";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, Search } from "lucide-react";
+import { Plus, Search, Users, Repeat, TrendingUp, Award } from "lucide-react";
 
 const STAGES = [
   { id: "lead", label: "Lead" },
@@ -14,8 +14,13 @@ const STAGES = [
   { id: "cliente", label: "Cliente" },
 ];
 
+function fmtMoney(v) {
+  return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+}
+
 function CrmContent() {
   const [customers, setCustomers] = useState([]);
+  const [orderStatsByCustomer, setOrderStatsByCustomer] = useState({});
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [showNewForm, setShowNewForm] = useState(false);
@@ -26,11 +31,20 @@ function CrmContent() {
 
   async function loadCustomers() {
     setLoading(true);
-    const { data } = await supabase
-      .from("customers")
-      .select("*")
-      .order("created_at", { ascending: false });
-    setCustomers(data || []);
+    const [{ data: customersData }, { data: ordersData }] = await Promise.all([
+      supabase.from("customers").select("*").order("created_at", { ascending: false }),
+      supabase.from("orders").select("customer_id, total"),
+    ]);
+    setCustomers(customersData || []);
+
+    const stats = {};
+    (ordersData || []).forEach((o) => {
+      if (!o.customer_id) return;
+      if (!stats[o.customer_id]) stats[o.customer_id] = { pedidos: 0, total: 0 };
+      stats[o.customer_id].pedidos += 1;
+      stats[o.customer_id].total += Number(o.total);
+    });
+    setOrderStatsByCustomer(stats);
     setLoading(false);
   }
 
@@ -60,6 +74,15 @@ function CrmContent() {
     c.name.toLowerCase().includes(search.toLowerCase())
   );
 
+  // ── Estatísticas gerais (visão de empresa, não de um cliente só) ──
+  const clientesComPedido = Object.keys(orderStatsByCustomer).length;
+  const clientesRecorrentes = Object.values(orderStatsByCustomer).filter((s) => s.pedidos >= 2).length;
+  const taxaRecompra = clientesComPedido > 0 ? (clientesRecorrentes / clientesComPedido) * 100 : 0;
+  const totalPedidos = Object.values(orderStatsByCustomer).reduce((s, o) => s + o.pedidos, 0);
+  const totalFaturado = Object.values(orderStatsByCustomer).reduce((s, o) => s + o.total, 0);
+  const ticketMedioGeral = totalPedidos > 0 ? totalFaturado / totalPedidos : 0;
+  const clientesVip = Object.values(orderStatsByCustomer).filter((s) => s.total >= 500 && s.pedidos >= 4).length;
+
   return (
     <div>
       <Sidebar />
@@ -73,6 +96,28 @@ function CrmContent() {
             <Plus size={16} /> Novo lead/cliente
           </button>
         </div>
+
+        {/* ── Estatísticas gerais ── */}
+        {!loading && (
+          <div style={styles.statsRow}>
+            <div style={styles.statCard}>
+              <div style={{ ...styles.statIcon, background: "#eff6ff" }}><Users size={16} color="#2563eb" /></div>
+              <div><div style={styles.statValue}>{clientesComPedido}</div><div style={styles.statLabel}>Clientes que já compraram</div></div>
+            </div>
+            <div style={styles.statCard}>
+              <div style={{ ...styles.statIcon, background: "#f0fdf4" }}><Repeat size={16} color="#16a34a" /></div>
+              <div><div style={styles.statValue}>{taxaRecompra.toFixed(0)}%</div><div style={styles.statLabel}>Taxa de recompra ({clientesRecorrentes} recorrentes)</div></div>
+            </div>
+            <div style={styles.statCard}>
+              <div style={{ ...styles.statIcon, background: "#fef3c7" }}><TrendingUp size={16} color="#d97706" /></div>
+              <div><div style={styles.statValue}>{fmtMoney(ticketMedioGeral)}</div><div style={styles.statLabel}>Ticket médio geral</div></div>
+            </div>
+            <div style={styles.statCard}>
+              <div style={{ ...styles.statIcon, background: "#fef9c3" }}><Award size={16} color="#a16207" /></div>
+              <div><div style={styles.statValue}>{clientesVip}</div><div style={styles.statLabel}>Clientes VIP</div></div>
+            </div>
+          </div>
+        )}
 
         {showNewForm && (
           <form onSubmit={handleCreate} style={styles.newForm}>
@@ -131,12 +176,20 @@ function CrmContent() {
                     {stageCustomers.length === 0 && (
                       <p style={styles.columnEmpty}>Ninguém aqui ainda</p>
                     )}
-                    {stageCustomers.map((c) => (
-                      <Link key={c.id} href={`/crm/${c.id}`} style={styles.customerCard}>
-                        <span style={styles.customerName}>{c.name}</span>
-                        {c.source && <span style={styles.customerSource}>{c.source}</span>}
-                      </Link>
-                    ))}
+                    {stageCustomers.map((c) => {
+                      const stats = orderStatsByCustomer[c.id];
+                      return (
+                        <Link key={c.id} href={`/crm/${c.id}`} style={styles.customerCard}>
+                          <span style={styles.customerName}>{c.name}</span>
+                          {c.source && <span style={styles.customerSource}>{c.source}</span>}
+                          {stats && (
+                            <span style={styles.customerStats}>
+                              {stats.pedidos} pedido(s) · {fmtMoney(stats.total)}
+                            </span>
+                          )}
+                        </Link>
+                      );
+                    })}
                   </div>
                 </div>
               );
@@ -166,6 +219,11 @@ const styles = {
     background: "#171717", color: "#fff", padding: "10px 16px",
     borderRadius: 10, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer",
   },
+  statsRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12, marginBottom: 18 },
+  statCard: { display: "flex", alignItems: "center", gap: 10, background: "#fff", border: "1px solid #e5e5e5", borderRadius: 12, padding: 14 },
+  statIcon: { width: 32, height: 32, borderRadius: 9, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 },
+  statValue: { fontSize: 16, fontWeight: 700 },
+  statLabel: { fontSize: 11, color: "#737373" },
   newForm: {
     display: "flex", gap: 8, flexWrap: "wrap", background: "#fff",
     border: "1px solid #e5e5e5", borderRadius: 12, padding: 14, marginBottom: 16,
@@ -205,4 +263,5 @@ const styles = {
   },
   customerName: { fontSize: 13, fontWeight: 600, color: "#171717" },
   customerSource: { fontSize: 11, color: "#a3a3a3" },
+  customerStats: { fontSize: 10.5, color: "#16a34a", fontWeight: 600, marginTop: 2 },
 };

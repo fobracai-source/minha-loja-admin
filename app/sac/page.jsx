@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import AuthGate from "../../components/AuthGate";
 import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, Phone, ShoppingBag, Scale, User, MapPin } from "lucide-react";
+import { Plus, Phone, ShoppingBag, Scale, User, MapPin, Repeat, Award, AlertTriangle, Package } from "lucide-react";
 
 const STATUSES = [
   { id: "aberto", label: "Aberto" },
@@ -27,6 +27,35 @@ function fmtMoney(v) {
   return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
 }
 
+function calcularPeriodicidade(orders) {
+  if (orders.length < 2) return null;
+  const datas = orders.map((o) => new Date(o.created_at)).sort((a, b) => a - b);
+  let somaDias = 0;
+  for (let i = 1; i < datas.length; i++) somaDias += (datas[i] - datas[i - 1]) / (1000 * 60 * 60 * 24);
+  return Math.round(somaDias / (datas.length - 1));
+}
+
+function produtoFavorito(orders) {
+  const contagem = {};
+  orders.forEach((o) => {
+    (o.order_items || []).forEach((item) => {
+      contagem[item.product_name] = (contagem[item.product_name] || 0) + item.quantity;
+    });
+  });
+  const entradas = Object.entries(contagem).sort((a, b) => b[1] - a[1]);
+  return entradas[0] ? { nome: entradas[0][0], quantidade: entradas[0][1] } : null;
+}
+
+function classificarCliente(pedidos, diasDesdeUltimaCompra, totalGasto, periodicidade) {
+  if (pedidos === 0) return { label: "Sem compras ainda", color: "#a3a3a3", bg: "#f5f5f5", icon: null };
+  if (pedidos === 1) return { label: "Cliente novo", color: "#2563eb", bg: "#eff6ff", icon: Package };
+  if (totalGasto >= 500 && pedidos >= 4) return { label: "Cliente VIP", color: "#a16207", bg: "#fef9c3", icon: Award };
+  if (periodicidade && diasDesdeUltimaCompra > periodicidade * 2.5) {
+    return { label: "Em risco de perda", color: "#dc2626", bg: "#fef2f2", icon: AlertTriangle };
+  }
+  return { label: "Cliente fiel", color: "#16a34a", bg: "#f0fdf4", icon: Repeat };
+}
+
 function SacContent() {
   const [tickets, setTickets] = useState([]);
   const [reclamacoesMap, setReclamacoesMap] = useState({});
@@ -47,7 +76,7 @@ function SacContent() {
     const [ticketsResult, reclamacoesResult, customersResult] = await Promise.all([
       supabase.from("support_tickets").select("*, orders(order_number)").order("created_at", { ascending: false }),
       supabase.from("juridico_reclamacoes").select("id, sac_chamado_id, canal, status").not("sac_chamado_id", "is", null),
-      supabase.from("customers").select("id, phone, street, street_number, neighborhood, city, state"),
+      supabase.from("customers").select("id, phone, street, street_number, neighborhood, city, state, orders(created_at, total, order_items(product_name, quantity))"),
     ]);
     setTickets(ticketsResult.data || []);
 
@@ -56,27 +85,33 @@ function SacContent() {
     setReclamacoesMap(map);
 
     const customers = customersResult.data || [];
-    if (customers.length > 0) {
-      const { data: profiles } = await supabase
-        .from("customer_profile_view")
-        .select("*")
-        .in("customer_id", customers.map((c) => c.id));
+    const byPhone = {};
+    customers.forEach((c) => {
+      const tel = normalizarTelefone(c.phone);
+      if (!tel) return;
+      const orders = c.orders || [];
+      const totalGasto = orders.reduce((s, o) => s + Number(o.total), 0);
+      const ultimaCompra = orders.length > 0
+        ? orders.reduce((max, o) => (new Date(o.created_at) > new Date(max) ? o.created_at : max), orders[0].created_at)
+        : null;
+      const diasDesdeUltimaCompra = ultimaCompra ? Math.round((Date.now() - new Date(ultimaCompra)) / (1000 * 60 * 60 * 24)) : null;
+      const periodicidade = calcularPeriodicidade(orders);
+      const favorito = produtoFavorito(orders);
+      const perfil = classificarCliente(orders.length, diasDesdeUltimaCompra ?? 9999, totalGasto, periodicidade);
 
-      const profileByCustomerId = {};
-      (profiles || []).forEach((p) => { profileByCustomerId[p.customer_id] = p; });
-
-      const byPhone = {};
-      customers.forEach((c) => {
-        const tel = normalizarTelefone(c.phone);
-        if (!tel) return;
-        byPhone[tel] = {
-          endereco: [c.street, c.street_number].filter(Boolean).join(", ") +
-            (c.city ? ` — ${c.neighborhood ? c.neighborhood + ", " : ""}${c.city}${c.state ? "/" + c.state : ""}` : ""),
-          ...profileByCustomerId[c.id],
-        };
-      });
-      setCustomerProfiles(byPhone);
-    }
+      byPhone[tel] = {
+        total_pedidos: orders.length,
+        total_gasto: totalGasto,
+        ticket_medio: orders.length > 0 ? totalGasto / orders.length : 0,
+        ultima_compra: ultimaCompra,
+        periodicidade,
+        favorito,
+        perfil,
+        endereco: [c.street, c.street_number].filter(Boolean).join(", ") +
+          (c.city ? ` — ${c.neighborhood ? c.neighborhood + ", " : ""}${c.city}${c.state ? "/" + c.state : ""}` : ""),
+      };
+    });
+    setCustomerProfiles(byPhone);
 
     setLoading(false);
   }
@@ -225,12 +260,25 @@ function SacContent() {
 
                   {perfil && (
                     <div style={styles.profileBox}>
-                      <div style={styles.profileHeader}><User size={12} /> Cliente já conhecido</div>
+                      <div style={styles.profileHeader}>
+                        <User size={12} /> Cliente já conhecido
+                        {perfil.perfil?.icon && (
+                          <span style={{ ...styles.perfilBadge, color: perfil.perfil.color, background: perfil.perfil.bg }}>
+                            <perfil.perfil.icon size={10} /> {perfil.perfil.label}
+                          </span>
+                        )}
+                      </div>
                       <div style={styles.profileStatsRow}>
                         <span><strong>{perfil.total_pedidos || 0}</strong> pedido(s)</span>
                         <span>Total gasto: <strong>{fmtMoney(perfil.total_gasto)}</strong></span>
                         <span>Ticket médio: <strong>{fmtMoney(perfil.ticket_medio)}</strong></span>
+                        {perfil.periodicidade && <span>Compra a cada <strong>{perfil.periodicidade} dias</strong></span>}
                       </div>
+                      {perfil.favorito && (
+                        <div style={styles.profileFavorito}>
+                          <ShoppingBag size={11} /> Mais compra: <strong>{perfil.favorito.nome}</strong> ({perfil.favorito.quantidade}x)
+                        </div>
+                      )}
                       {perfil.endereco && (
                         <div style={styles.profileAddress}><MapPin size={11} /> {perfil.endereco}</div>
                       )}
@@ -308,8 +356,10 @@ const styles = {
   metaDate: { marginLeft: "auto" },
   statusSelect: { border: "1px solid #e5e5e5", borderRadius: 8, padding: "6px 10px", fontSize: 12, fontWeight: 600 },
   profileBox: { background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "8px 12px", marginBottom: 10 },
-  profileHeader: { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4 },
+  profileHeader: { display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, fontWeight: 700, color: "#1d4ed8", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4, flexWrap: "wrap" },
+  perfilBadge: { display: "flex", alignItems: "center", gap: 3, fontSize: 9.5, fontWeight: 700, padding: "2px 7px", borderRadius: 999, textTransform: "none", letterSpacing: 0 },
   profileStatsRow: { display: "flex", gap: 14, flexWrap: "wrap", fontSize: 11.5, color: "#1e3a8a" },
+  profileFavorito: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#1e3a8a", marginTop: 4 },
   profileAddress: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#3b5998", marginTop: 4 },
   description: { fontSize: 13, color: "#525252", marginBottom: 12, lineHeight: 1.5 },
   responseLabel: { fontSize: 11, fontWeight: 600, color: "#525252", display: "block", marginBottom: 4 },
