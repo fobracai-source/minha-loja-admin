@@ -6,7 +6,7 @@ import Sidebar from "../../components/Sidebar";
 import TransactionDetailModal from "../../components/TransactionDetailModal";
 import BreakEvenChart from "../../components/BreakEvenChart";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw, PiggyBank } from "lucide-react";
+import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw, PiggyBank, Building2, X, Phone, MapPin } from "lucide-react";
 
 function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
@@ -285,6 +285,104 @@ function FinanceiroContent() {
 
   // ────────────────── FIM ABA INVESTIMENTOS ──────────────────
 
+  // ────────────────── ABA GOVERNO ──────────────────
+  const [pedidosImposto, setPedidosImposto] = useState([]);
+  const [governoLoading, setGovernoLoading] = useState(true);
+  const [selectedOrderIds, setSelectedOrderIds] = useState([]);
+  const [filtroPedidoNumero, setFiltroPedidoNumero] = useState("");
+  const [filtroCliente, setFiltroCliente] = useState("");
+  const [filtroTelefone, setFiltroTelefone] = useState("");
+  const [filtroStatusImposto, setFiltroStatusImposto] = useState("nao_lancados");
+  const [detailOrderGoverno, setDetailOrderGoverno] = useState(null);
+  const [gerandoContaGoverno, setGerandoContaGoverno] = useState(false);
+  const [mensagemGoverno, setMensagemGoverno] = useState("");
+
+  async function loadGovernoData() {
+    setGovernoLoading(true);
+    const { data: taxRows } = await supabase
+      .from("order_tax_view")
+      .select("*")
+      .order("created_at", { ascending: false });
+
+    const customerIds = [...new Set((taxRows || []).map((r) => r.customer_id).filter(Boolean))];
+    const { data: customersData } = customerIds.length
+      ? await supabase.from("customers").select("id, name, phone").in("id", customerIds)
+      : { data: [] };
+
+    const customerMap = {};
+    (customersData || []).forEach((c) => { customerMap[c.id] = c; });
+
+    const merged = (taxRows || []).map((r) => ({
+      ...r,
+      cliente_nome: customerMap[r.customer_id]?.name || "—",
+      cliente_telefone: customerMap[r.customer_id]?.phone || "",
+    }));
+
+    setPedidosImposto(merged);
+    setGovernoLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "governo") loadGovernoData();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  async function loadOrderDetailGoverno(orderId) {
+    const { data } = await supabase
+      .from("orders")
+      .select("*, customers(name, phone, email, street, street_number, complement, neighborhood, city, state, zip_code, reference_point), order_items(product_name, unit_price, quantity, product_id, products(tax_pct)), deliveries(status)")
+      .eq("id", orderId)
+      .single();
+    setDetailOrderGoverno(data);
+  }
+
+  function toggleSelectOrder(id) {
+    setSelectedOrderIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  }
+
+  async function handleGerarContaGoverno() {
+    if (selectedOrderIds.length === 0) return;
+    setGerandoContaGoverno(true);
+    setMensagemGoverno("");
+
+    const { error } = await supabase.rpc("gerar_conta_imposto_governo", { p_order_ids: selectedOrderIds });
+
+    if (error) {
+      setMensagemGoverno(`Erro: ${error.message}`);
+    } else {
+      setMensagemGoverno(`Conta a pagar gerada com sucesso para ${selectedOrderIds.length} pedido(s). Confira em "Contas a Pagar/Receber".`);
+      setSelectedOrderIds([]);
+      loadGovernoData();
+    }
+    setGerandoContaGoverno(false);
+  }
+
+  const pedidosImpostoFiltrados = pedidosImposto
+    .filter((p) => !filtroPedidoNumero || String(p.order_number).includes(filtroPedidoNumero))
+    .filter((p) => !filtroCliente || p.cliente_nome.toLowerCase().includes(filtroCliente.toLowerCase()))
+    .filter((p) => !filtroTelefone || (p.cliente_telefone || "").includes(filtroTelefone))
+    .filter((p) => {
+      if (filtroStatusImposto === "todos") return true;
+      if (filtroStatusImposto === "nao_lancados") return !p.tax_settled;
+      if (filtroStatusImposto === "lancados") return p.tax_settled;
+      return true;
+    });
+
+  const totalImpostoFiltrado = pedidosImpostoFiltrados.reduce((s, p) => s + Number(p.tax_amount), 0);
+  const totalSelecionado = pedidosImposto
+    .filter((p) => selectedOrderIds.includes(p.order_id))
+    .reduce((s, p) => s + Number(p.tax_amount), 0);
+
+  function fmtMoneyGoverno(v) {
+    return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+  }
+  function fmtDateGoverno(d) {
+    if (!d) return "—";
+    return new Date(d).toLocaleDateString("pt-BR");
+  }
+
+  // ────────────────── FIM ABA GOVERNO ──────────────────
+
   // ────────────────── FIM ABA BANCOS ──────────────────
 
   async function loadTransactions() {
@@ -561,6 +659,7 @@ function FinanceiroContent() {
           <button onClick={() => setTab("caixa")} style={{ ...styles.tabButton, ...(tab === "caixa" ? styles.tabActive : {}) }}>Caixa</button>
           <button onClick={() => setTab("bancos")} style={{ ...styles.tabButton, ...(tab === "bancos" ? styles.tabActive : {}) }}>Bancos</button>
           <button onClick={() => setTab("investimentos")} style={{ ...styles.tabButton, ...(tab === "investimentos" ? styles.tabActive : {}) }}>Investimentos</button>
+          <button onClick={() => setTab("governo")} style={{ ...styles.tabButton, ...(tab === "governo" ? styles.tabActive : {}) }}>Governo</button>
           <button onClick={() => setTab("plano")} style={{ ...styles.tabButton, ...(tab === "plano" ? styles.tabActive : {}) }}>Plano de Contas</button>
           <button onClick={() => setTab("dre")} style={{ ...styles.tabButton, ...(tab === "dre" ? styles.tabActive : {}) }}>DRE</button>
           <button onClick={() => setTab("equilibrio")} style={{ ...styles.tabButton, ...(tab === "equilibrio" ? styles.tabActive : {}) }}>Ponto de Equilíbrio</button>
@@ -1035,6 +1134,141 @@ function FinanceiroContent() {
           </>
         )}
 
+        {tab === "governo" && (
+          <>
+            <p style={styles.dreExplainer}>
+              <Info size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+              Mostra os pedidos com entrega confirmada e o imposto calculado (soma do "% Impostos"
+              de cada produto vendido). Selecione vários pedidos e clique em "Gerar conta a pagar"
+              para consolidar tudo numa única Conta a Pagar — que aparece na aba "Contas a
+              Pagar/Receber" e, quando baixada no Caixa, credita automaticamente o Governo.
+            </p>
+
+            {mensagemGoverno && <p style={styles.mensagemBanco}>{mensagemGoverno}</p>}
+
+            <div style={styles.filters}>
+              <input placeholder="Nº do pedido" value={filtroPedidoNumero} onChange={(e) => setFiltroPedidoNumero(e.target.value)} style={styles.filterInput} />
+              <input placeholder="Cliente" value={filtroCliente} onChange={(e) => setFiltroCliente(e.target.value)} style={styles.filterInput} />
+              <input placeholder="Telefone" value={filtroTelefone} onChange={(e) => setFiltroTelefone(e.target.value)} style={styles.filterInput} />
+              <select value={filtroStatusImposto} onChange={(e) => setFiltroStatusImposto(e.target.value)} style={styles.filterInput}>
+                <option value="nao_lancados">Não lançados</option>
+                <option value="lancados">Já lançados</option>
+                <option value="todos">Todos</option>
+              </select>
+            </div>
+
+            <div style={styles.headerRow}>
+              <div style={styles.summary}>
+                <span>{pedidosImpostoFiltrados.length} pedido(s) no filtro</span>
+                <span style={styles.summaryTotal}>Total de imposto: {fmtMoneyGoverno(totalImpostoFiltrado)}</span>
+              </div>
+              {selectedOrderIds.length > 0 && (
+                <button onClick={handleGerarContaGoverno} disabled={gerandoContaGoverno} style={styles.batchButton}>
+                  <Building2 size={14} /> {gerandoContaGoverno ? "Gerando…" : `Gerar conta a pagar — ${selectedOrderIds.length} pedido(s), ${fmtMoneyGoverno(totalSelecionado)}`}
+                </button>
+              )}
+            </div>
+
+            {governoLoading ? (
+              <p style={styles.empty}>Carregando…</p>
+            ) : pedidosImpostoFiltrados.length === 0 ? (
+              <p style={styles.empty}>Nenhum pedido encontrado nesse filtro.</p>
+            ) : (
+              <div style={styles.tableWrap}>
+                <table>
+                  <thead>
+                    <tr>
+                      <th style={styles.th}></th>
+                      <th style={styles.th}>Nº</th>
+                      <th style={styles.th}>Data</th>
+                      <th style={styles.th}>Cliente</th>
+                      <th style={styles.th}>Telefone</th>
+                      <th style={styles.th}>Total do pedido</th>
+                      <th style={styles.th}>Imposto</th>
+                      <th style={styles.th}>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pedidosImpostoFiltrados.map((p) => (
+                      <tr key={p.order_id} style={styles.tr}>
+                        <td style={styles.td} onClick={(e) => e.stopPropagation()}>
+                          {!p.tax_settled && (
+                            <button onClick={() => toggleSelectOrder(p.order_id)} style={styles.checkboxButton}>
+                              {selectedOrderIds.includes(p.order_id) ? <CheckSquare size={16} color="#171717" /> : <Square size={16} color="#d4d4d4" />}
+                            </button>
+                          )}
+                        </td>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => loadOrderDetailGoverno(p.order_id)}>#{p.order_number}</td>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => loadOrderDetailGoverno(p.order_id)}>{fmtDateGoverno(p.created_at)}</td>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => loadOrderDetailGoverno(p.order_id)}>{p.cliente_nome}</td>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => loadOrderDetailGoverno(p.order_id)}>{p.cliente_telefone || "—"}</td>
+                        <td style={{ ...styles.td, cursor: "pointer" }} onClick={() => loadOrderDetailGoverno(p.order_id)}>{fmtMoneyGoverno(p.order_total)}</td>
+                        <td style={{ ...styles.td, cursor: "pointer", fontWeight: 700 }} onClick={() => loadOrderDetailGoverno(p.order_id)}>{fmtMoneyGoverno(p.tax_amount)}</td>
+                        <td style={styles.td}>
+                          <span style={{ ...styles.badge, ...(p.tax_settled ? styles.badgeDone : styles.badgePending) }}>
+                            {p.tax_settled ? "Lançado" : "Não lançado"}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {detailOrderGoverno && (
+              <div style={styles.modalOverlay} onClick={() => setDetailOrderGoverno(null)}>
+                <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+                  <div style={styles.modalHeader}>
+                    <h2 style={styles.modalTitle}>Pedido #{detailOrderGoverno.order_number}</h2>
+                    <button onClick={() => setDetailOrderGoverno(null)} style={styles.modalClose}><X size={18} /></button>
+                  </div>
+                  <div style={styles.modalBody}>
+                    <div style={styles.modalSection}>
+                      <span style={styles.modalSectionTitle}>Cliente</span>
+                      <p style={styles.modalText}>{detailOrderGoverno.customers?.name || "—"}</p>
+                      <p style={styles.modalTextMuted}><Phone size={11} style={{ display: "inline", marginRight: 4 }} />{detailOrderGoverno.customers?.phone} {detailOrderGoverno.customers?.email ? `· ${detailOrderGoverno.customers.email}` : ""}</p>
+                    </div>
+                    <div style={styles.modalSection}>
+                      <span style={styles.modalSectionTitle}><MapPin size={11} style={{ display: "inline", marginRight: 4 }} />Endereço</span>
+                      <p style={styles.modalText}>
+                        {[detailOrderGoverno.customers?.street, detailOrderGoverno.customers?.street_number].filter(Boolean).join(", ")}
+                        {detailOrderGoverno.customers?.complement ? ` — ${detailOrderGoverno.customers.complement}` : ""}
+                      </p>
+                      <p style={styles.modalText}>{detailOrderGoverno.customers?.neighborhood}</p>
+                      <p style={styles.modalText}>{[detailOrderGoverno.customers?.city, detailOrderGoverno.customers?.state].filter(Boolean).join(" - ")} {detailOrderGoverno.customers?.zip_code ? `· CEP ${detailOrderGoverno.customers.zip_code}` : ""}</p>
+                    </div>
+                    <div style={styles.modalSection}>
+                      <span style={styles.modalSectionTitle}>Itens e imposto por item</span>
+                      {(detailOrderGoverno.order_items || []).map((item, i) => {
+                        const taxPct = item.products?.tax_pct || 0;
+                        const itemTax = (Number(item.unit_price) * item.quantity * taxPct) / 100;
+                        return (
+                          <div key={i} style={styles.modalItemRow}>
+                            <span>{item.quantity}x {item.product_name} ({taxPct}% imposto)</span>
+                            <span>{fmtMoneyGoverno(itemTax)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={styles.modalSection}>
+                      <span style={styles.modalSectionTitle}>Pagamento</span>
+                      <p style={styles.modalText}>{detailOrderGoverno.payment_method === "cod" ? "Pagar na Entrega" : detailOrderGoverno.payment_method}</p>
+                    </div>
+                    <div style={styles.modalSection}>
+                      <span style={styles.modalSectionTitle}>Entrega</span>
+                      <p style={styles.modalText}>{Array.isArray(detailOrderGoverno.deliveries) ? detailOrderGoverno.deliveries[0]?.status : detailOrderGoverno.deliveries?.status}</p>
+                    </div>
+                    <div style={styles.modalTotalBox}>
+                      <div style={styles.modalTotalRow}><span>Total do pedido</span><span>{fmtMoneyGoverno(detailOrderGoverno.total)}</span></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
         {tab === "plano" && (
           <>
             <p style={styles.dreExplainer}>
@@ -1427,6 +1661,21 @@ const styles = {
   parcelaBadge: { fontSize: 10.5, fontWeight: 600, padding: "2px 7px", borderRadius: 999 },
   parcelaBadgePaga: { background: "#dcfce7", color: "#16a34a" },
   parcelaBadgePendente: { background: "#f0f0f0", color: "#737373" },
+  summary: { display: "flex", gap: 16, alignItems: "center", fontSize: 13, color: "#737373", flexWrap: "wrap" },
+  summaryTotal: { fontWeight: 700, color: "#171717" },
+  modalOverlay: { position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 50, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 },
+  modalCard: { background: "#fff", borderRadius: 16, width: "100%", maxWidth: 480, maxHeight: "85vh", display: "flex", flexDirection: "column" },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "16px 18px", borderBottom: "1px solid #f0f0f0" },
+  modalTitle: { fontSize: 16, fontWeight: 800, margin: 0 },
+  modalClose: { background: "#f5f5f5", border: "none", width: 30, height: 30, borderRadius: 15, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer" },
+  modalBody: { padding: "16px 18px", overflowY: "auto", display: "flex", flexDirection: "column", gap: 16 },
+  modalSection: { display: "flex", flexDirection: "column", gap: 2 },
+  modalSectionTitle: { fontSize: 10.5, fontWeight: 700, color: "#a3a3a3", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 3 },
+  modalText: { fontSize: 13.5, color: "#171717", margin: 0 },
+  modalTextMuted: { fontSize: 12, color: "#a3a3a3", margin: 0 },
+  modalItemRow: { display: "flex", justifyContent: "space-between", fontSize: 13, padding: "3px 0" },
+  modalTotalBox: { background: "#fafafa", borderRadius: 10, padding: "10px 14px", display: "flex", flexDirection: "column", gap: 3 },
+  modalTotalRow: { display: "flex", justifyContent: "space-between", fontSize: 12.5, color: "#525252", fontWeight: 700 },
   errorMsg: { color: "#dc2626", fontSize: 12.5, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: "8px 12px", marginBottom: 14 },
   particularidadesPreview: { display: "flex", flexWrap: "wrap", gap: 10, fontSize: 11, color: "#525252", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "8px 10px", marginTop: 10 },
   fieldHintInline: { fontSize: 10.5, color: "#a3a3a3", marginTop: 3, display: "block" },
