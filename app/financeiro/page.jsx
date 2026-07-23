@@ -6,7 +6,7 @@ import Sidebar from "../../components/Sidebar";
 import TransactionDetailModal from "../../components/TransactionDetailModal";
 import BreakEvenChart from "../../components/BreakEvenChart";
 import { supabase } from "../../lib/supabaseClient";
-import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw, PiggyBank, Building2, X, Phone, MapPin } from "lucide-react";
+import { Plus, TrendingUp, TrendingDown, Wallet, AlertTriangle, CheckSquare, Square, Layers, Info, Scale, Landmark, ShieldCheck, ChevronDown, ChevronUp, ArrowRightLeft, RefreshCw, PiggyBank, Building2, X, Phone, MapPin, Users2 } from "lucide-react";
 
 function todayDateInput() {
   return new Date().toISOString().slice(0, 10);
@@ -385,6 +385,63 @@ function FinanceiroContent() {
 
   // ────────────────── FIM ABA BANCOS ──────────────────
 
+  // ────────────────── FOLHA DE PAGAMENTO ──────────────────
+  const [gerandoFolha, setGerandoFolha] = useState(false);
+  const [mensagemFolha, setMensagemFolha] = useState("");
+  const [showFolhaConflict, setShowFolhaConflict] = useState(false);
+  const [folhaConflictRunId, setFolhaConflictRunId] = useState(null);
+  const [processandoConflito, setProcessandoConflito] = useState(false);
+
+  async function handleGerarFolha() {
+    setGerandoFolha(true);
+    setMensagemFolha("");
+    const { error } = await supabase.rpc("gerar_folha_pagamento", { p_forcar: false });
+
+    if (error) {
+      if (error.message.includes("FOLHA_JA_GERADA")) {
+        const mesAtual = new Date().toISOString().slice(0, 7);
+        const { data: runData } = await supabase.from("payroll_runs").select("id").eq("mes", mesAtual).maybeSingle();
+        setFolhaConflictRunId(runData?.id || null);
+        setShowFolhaConflict(true);
+      } else {
+        setMensagemFolha(`Erro: ${error.message}`);
+      }
+    } else {
+      setMensagemFolha("Folha de pagamento gerada com sucesso! Confira as duas novas contas a pagar (Folha e IR) na lista abaixo.");
+      loadTransactions();
+    }
+    setGerandoFolha(false);
+  }
+
+  async function handleDuplicarFolha() {
+    setProcessandoConflito(true);
+    const { error } = await supabase.rpc("gerar_folha_pagamento", { p_forcar: true });
+    if (error) setMensagemFolha(`Erro: ${error.message}`);
+    else setMensagemFolha("Folha duplicada com sucesso — agora existem 2 lançamentos desse mês.");
+    setShowFolhaConflict(false);
+    setProcessandoConflito(false);
+    loadTransactions();
+  }
+
+  async function handleApagarEGerarFolha() {
+    if (!folhaConflictRunId) return;
+    setProcessandoConflito(true);
+    const { error: deleteError } = await supabase.rpc("apagar_folha_mes", { p_run_id: folhaConflictRunId });
+    if (deleteError) {
+      setMensagemFolha(`Erro ao apagar: ${deleteError.message}`);
+      setShowFolhaConflict(false);
+      setProcessandoConflito(false);
+      return;
+    }
+    const { error } = await supabase.rpc("gerar_folha_pagamento", { p_forcar: false });
+    if (error) setMensagemFolha(`Erro: ${error.message}`);
+    else setMensagemFolha("Lançamento anterior apagado e folha gerada novamente com sucesso.");
+    setShowFolhaConflict(false);
+    setProcessandoConflito(false);
+    loadTransactions();
+  }
+  // ────────────────── FIM FOLHA DE PAGAMENTO ──────────────────
+
   async function loadTransactions() {
     setLoading(true);
     const { data } = await supabase.from("financial_transactions").select("*").order("due_date", { ascending: true });
@@ -686,12 +743,17 @@ function FinanceiroContent() {
 
             <div style={styles.headerRow}>
               <button onClick={() => setShowForm((v) => !v)} style={styles.newButton}><Plus size={16} /> Novo lançamento</button>
+              <button onClick={handleGerarFolha} disabled={gerandoFolha} style={styles.folhaButton}>
+                <Users2 size={15} /> {gerandoFolha ? "Gerando…" : "GERAR FOLHA DE PAGAMENTO E RECOLHER IMPOSTOS"}
+              </button>
               {selectedIds.length > 0 && (
                 <button onClick={handleBaixaEmLote} style={styles.batchButton}>
                   <Layers size={14} /> Dar baixa em {selectedIds.length} conta(s) — {fmt(selectedTotal)}
                 </button>
               )}
             </div>
+
+            {mensagemFolha && <p style={styles.mensagemBanco}>{mensagemFolha}</p>}
 
             {showForm && (
               <form onSubmit={handleCreate} style={styles.form}>
@@ -1556,6 +1618,33 @@ function FinanceiroContent() {
         )}
       </div>
 
+      {showFolhaConflict && (
+        <div style={styles.modalOverlay} onClick={() => !processandoConflito && setShowFolhaConflict(false)}>
+          <div style={styles.modalCard} onClick={(e) => e.stopPropagation()}>
+            <div style={styles.modalHeader}>
+              <h2 style={styles.modalTitle}>Folha já gerada</h2>
+              <button onClick={() => setShowFolhaConflict(false)} style={styles.modalClose}><X size={18} /></button>
+            </div>
+            <div style={styles.modalBody}>
+              <p style={styles.modalText}>FOLHA DE PAGAMENTO JÁ GERADA PARA ESSE MÊS.</p>
+              <p style={{ ...styles.modalTextMuted, marginTop: 6 }}>
+                Gerar novamente e duplicar o registro, ou apagar o lançamento anterior (só é possível
+                se ele ainda não tiver sido baixado no Caixa)?
+              </p>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 18 }}>
+                <button onClick={handleDuplicarFolha} disabled={processandoConflito} style={styles.saveButton}>
+                  {processandoConflito ? "Processando…" : "Gerar novamente (duplicar)"}
+                </button>
+                <button onClick={handleApagarEGerarFolha} disabled={processandoConflito} style={{ ...styles.saveButton, background: "#dc2626" }}>
+                  {processandoConflito ? "Processando…" : "Apagar anterior e gerar de novo"}
+                </button>
+                <button onClick={() => setShowFolhaConflict(false)} style={styles.cancelButton}>Cancelar</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {detailTransaction && (
         <TransactionDetailModal
           transaction={detailTransaction}
@@ -1592,6 +1681,7 @@ const styles = {
   headerRow: { display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10, marginBottom: 14 },
   newButton: { display: "flex", alignItems: "center", gap: 6, background: "#171717", color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer" },
   batchButton: { display: "flex", alignItems: "center", gap: 6, background: "#2563eb", color: "#fff", padding: "10px 16px", borderRadius: 10, fontSize: 13, fontWeight: 600, border: "none", cursor: "pointer" },
+  folhaButton: { display: "flex", alignItems: "center", gap: 6, background: "#fff", color: "#171717", padding: "10px 16px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, border: "2px solid #171717", cursor: "pointer" },
   refreshButton: { display: "flex", alignItems: "center", gap: 6, border: "1px solid #e5e5e5", background: "#fff", borderRadius: 10, padding: "9px 14px", fontSize: 12.5, fontWeight: 600, cursor: "pointer" },
   mensagemBanco: { fontSize: 12.5, color: "#16a34a", background: "#f0fdf4", border: "1px solid #bbf7d0", borderRadius: 10, padding: "8px 12px", marginBottom: 14 },
   sectionTitle: { display: "flex", alignItems: "center", gap: 8, fontSize: 14, fontWeight: 700, marginBottom: 10 },
