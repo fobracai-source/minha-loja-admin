@@ -6,6 +6,7 @@ import Sidebar from "../../components/Sidebar";
 import { supabase } from "../../lib/supabaseClient";
 import {
   FileText, Landmark, ShieldCheck, MessageSquareWarning, BadgeCheck, Plus,
+  Paperclip, Upload, Trash2, Download,
 } from "lucide-react";
 
 function todayDateInput() {
@@ -55,6 +56,82 @@ function JuridicoContent() {
   const [documentos, setDocumentos] = useState([]);
   const [employees, setEmployees] = useState([]);
   const [ticketsSac, setTicketsSac] = useState([]);
+
+  // ────────────────── ABA ANEXOS ──────────────────
+  const [anexos, setAnexos] = useState([]);
+  const [anexosLoading, setAnexosLoading] = useState(true);
+  const [showAnexoForm, setShowAnexoForm] = useState(false);
+  const [savingAnexo, setSavingAnexo] = useState(false);
+  const [anexoTitulo, setAnexoTitulo] = useState("");
+  const [anexoCategoria, setAnexoCategoria] = useState("Outro");
+  const [anexoRegistroRelacionado, setAnexoRegistroRelacionado] = useState("");
+  const [anexoDescricao, setAnexoDescricao] = useState("");
+  const [anexoDataDocumento, setAnexoDataDocumento] = useState("");
+  const [anexoArquivo, setAnexoArquivo] = useState(null);
+  const [anexoErro, setAnexoErro] = useState("");
+
+  async function loadAnexos() {
+    setAnexosLoading(true);
+    const { data } = await supabase.from("juridico_anexos").select("*").order("created_at", { ascending: false });
+    setAnexos(data || []);
+    setAnexosLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "anexos") loadAnexos();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  function resetAnexoForm() {
+    setAnexoTitulo(""); setAnexoCategoria("Outro"); setAnexoRegistroRelacionado("");
+    setAnexoDescricao(""); setAnexoDataDocumento(""); setAnexoArquivo(null); setAnexoErro("");
+  }
+
+  async function handleUploadAnexo(e) {
+    e.preventDefault();
+    if (!anexoTitulo.trim() || !anexoArquivo) {
+      setAnexoErro("Preencha o título e escolha um arquivo.");
+      return;
+    }
+    setSavingAnexo(true);
+    setAnexoErro("");
+
+    try {
+      const fileExt = anexoArquivo.name.split(".").pop();
+      const filePath = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
+      const { error: uploadError } = await supabase.storage.from("juridico-anexos").upload(filePath, anexoArquivo);
+      if (uploadError) throw uploadError;
+
+      const { data: publicUrlData } = supabase.storage.from("juridico-anexos").getPublicUrl(filePath);
+
+      const { error: insertError } = await supabase.from("juridico_anexos").insert({
+        titulo: anexoTitulo.trim(),
+        categoria: anexoCategoria,
+        registro_relacionado: anexoRegistroRelacionado.trim() || null,
+        descricao: anexoDescricao.trim() || null,
+        data_documento: anexoDataDocumento || null,
+        arquivo_url: publicUrlData.publicUrl,
+        arquivo_nome: anexoArquivo.name,
+      });
+      if (insertError) throw insertError;
+
+      resetAnexoForm();
+      setShowAnexoForm(false);
+      loadAnexos();
+    } catch (err) {
+      setAnexoErro(err.message || "Não foi possível enviar o arquivo.");
+    } finally {
+      setSavingAnexo(false);
+    }
+  }
+
+  async function handleDeleteAnexo(id, titulo) {
+    if (!confirm(`Excluir o anexo "${titulo}"? Essa ação não pode ser desfeita.`)) return;
+    await supabase.from("juridico_anexos").delete().eq("id", id);
+    loadAnexos();
+  }
+  // ────────────────── FIM ABA ANEXOS ──────────────────
+
 
   async function loadAll() {
     setLoading(true);
@@ -342,6 +419,7 @@ function JuridicoContent() {
           <button onClick={() => setTab("lgpd")} style={{ ...styles.tabButton, ...(tab === "lgpd" ? styles.tabActive : {}) }}>LGPD</button>
           <button onClick={() => setTab("reclamacoes")} style={{ ...styles.tabButton, ...(tab === "reclamacoes" ? styles.tabActive : {}) }}>Reclamações</button>
           <button onClick={() => setTab("documentos")} style={{ ...styles.tabButton, ...(tab === "documentos" ? styles.tabActive : {}) }}>Documentos</button>
+          <button onClick={() => setTab("anexos")} style={{ ...styles.tabButton, ...(tab === "anexos" ? styles.tabActive : {}) }}>Anexos</button>
         </div>
 
         {loading ? (
@@ -845,6 +923,97 @@ function JuridicoContent() {
                 )}
               </>
             )}
+
+            {tab === "anexos" && (
+              <>
+                <p style={styles.explainer}>
+                  <Paperclip size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                  Guarde aqui qualquer PDF ou imagem importante do Jurídico — contratos escaneados,
+                  comprovantes, certidões, laudos. Cada anexo pode ser marcado com a área a que pertence.
+                </p>
+
+                <button onClick={() => setShowAnexoForm((v) => !v)} style={styles.newButton}>
+                  <Upload size={16} /> Novo anexo
+                </button>
+
+                {showAnexoForm && (
+                  <form onSubmit={handleUploadAnexo} style={styles.form}>
+                    <label style={styles.label}>Título do documento *</label>
+                    <input value={anexoTitulo} onChange={(e) => setAnexoTitulo(e.target.value)} style={styles.input} placeholder="Ex: Contrato de aluguel assinado" required />
+
+                    <div style={styles.row}>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Categoria</label>
+                        <select value={anexoCategoria} onChange={(e) => setAnexoCategoria(e.target.value)} style={styles.input}>
+                          <option value="Contratos">Contratos</option>
+                          <option value="Obrigações Fiscais">Obrigações Fiscais</option>
+                          <option value="LGPD">LGPD</option>
+                          <option value="Reclamações">Reclamações</option>
+                          <option value="Documentos">Documentos</option>
+                          <option value="Outro">Outro</option>
+                        </select>
+                      </div>
+                      <div style={{ flex: 1 }}>
+                        <label style={styles.label}>Data do documento</label>
+                        <input type="date" value={anexoDataDocumento} onChange={(e) => setAnexoDataDocumento(e.target.value)} style={styles.input} />
+                      </div>
+                    </div>
+
+                    <label style={styles.label}>Registro relacionado (opcional)</label>
+                    <input value={anexoRegistroRelacionado} onChange={(e) => setAnexoRegistroRelacionado(e.target.value)} style={styles.input} placeholder="Ex: Contrato #123, Reclamação da cliente Maria..." />
+
+                    <label style={styles.label}>Descrição</label>
+                    <textarea value={anexoDescricao} onChange={(e) => setAnexoDescricao(e.target.value)} style={{ ...styles.input, minHeight: 60 }} />
+
+                    <label style={styles.label}>Arquivo (PDF ou imagem) *</label>
+                    <input
+                      type="file"
+                      accept=".pdf,image/*"
+                      onChange={(e) => setAnexoArquivo(e.target.files[0] || null)}
+                      style={styles.input}
+                      required
+                    />
+
+                    {anexoErro && <p style={{ color: "#dc2626", fontSize: 12, marginTop: 10 }}>{anexoErro}</p>}
+
+                    <button type="submit" style={styles.saveButton} disabled={savingAnexo}>
+                      {savingAnexo ? "Enviando…" : "Enviar anexo"}
+                    </button>
+                  </form>
+                )}
+
+                {anexosLoading ? (
+                  <p style={styles.empty}>Carregando…</p>
+                ) : anexos.length === 0 ? (
+                  <p style={styles.empty}>Nenhum anexo enviado ainda.</p>
+                ) : (
+                  <div style={styles.list}>
+                    {anexos.map((a) => (
+                      <div key={a.id} style={styles.card}>
+                        <div style={{ padding: 14, display: "flex", alignItems: "center", gap: 12 }}>
+                          <div style={{ ...styles.iconBox, background: "#eff6ff", color: "#2563eb" }}><Paperclip size={16} /></div>
+                          <div style={{ flex: 1 }}>
+                            <div style={styles.empDetalhe}>{a.titulo}</div>
+                            <div style={{ fontSize: 11.5, color: "#a3a3a3", marginTop: 2 }}>
+                              {a.categoria}
+                              {a.registro_relacionado ? ` · ${a.registro_relacionado}` : ""}
+                              {a.data_documento ? ` · ${fmtDate(a.data_documento)}` : ""}
+                            </div>
+                            {a.descricao && <div style={{ fontSize: 12, color: "#525252", marginTop: 4 }}>{a.descricao}</div>}
+                          </div>
+                          <a href={a.arquivo_url} target="_blank" rel="noopener noreferrer" style={styles.iconButtonLink} title="Baixar / abrir">
+                            <Download size={14} />
+                          </a>
+                          <button onClick={() => handleDeleteAnexo(a.id, a.titulo)} style={styles.iconButtonLink}>
+                            <Trash2 size={14} color="#dc2626" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </>
         )}
       </div>
@@ -890,5 +1059,6 @@ const styles = {
   saveButton: { border: "none", background: "#171717", color: "#fff", borderRadius: 10, padding: "11px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer", marginTop: 16 },
   warnNote: { fontSize: 12, color: "#d97706", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "9px 12px", marginTop: 10 },
   helperText: { fontSize: 11, color: "#a3a3a3", marginTop: 4 },
+  iconButtonLink: { width: 30, height: 30, borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
   linkedTag: { fontSize: 11, fontWeight: 600, background: "#dbeafe", color: "#2563eb", borderRadius: 999, padding: "3px 8px" },
 };
