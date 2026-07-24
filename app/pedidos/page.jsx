@@ -31,8 +31,18 @@ function getDeliveryStatus(order) {
   return d?.status || "aguardando_separacao";
 }
 
+function getDataEntrega(order) {
+  const d = Array.isArray(order.deliveries) ? order.deliveries[0] : order.deliveries;
+  return d?.data_entrega || null;
+}
+
 function fmtMoney(v) {
   return `R$ ${Number(v || 0).toFixed(2).replace(".", ",")}`;
+}
+
+function fmtDate(d) {
+  if (!d) return "—";
+  return new Date(d + "T00:00:00").toLocaleDateString("pt-BR");
 }
 
 function PedidosContent() {
@@ -47,7 +57,7 @@ function PedidosContent() {
     setLoading(true);
     let query = supabase
       .from("orders")
-      .select("*, customers(name, email, phone, street, street_number, complement, neighborhood, city, state, zip_code, reference_point), order_items(product_name, unit_price, quantity), deliveries(status, tracking_code, carrier, estimated_date)")
+      .select("*, customers(name, email, phone, street, street_number, complement, neighborhood, city, state, zip_code, reference_point), order_items(product_name, unit_price, quantity), deliveries(status, tracking_code, carrier, estimated_date, data_entrega)")
       .order("created_at", { ascending: false });
 
     if (startDate) query = query.gte("created_at", `${startDate}T00:00:00`);
@@ -163,11 +173,13 @@ function PedidosContent() {
                   <th style={styles.th}>Total</th>
                   <th style={styles.th}>Obs.</th>
                   <th style={styles.th}>Status de entrega</th>
+                  <th style={styles.th}>Data de entrega</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredOrders.map((o) => {
                   const deliveryStatus = getDeliveryStatus(o);
+                  const dataEntrega = getDataEntrega(o);
                   return (
                     <tr key={o.id} style={{ ...styles.tr, cursor: "pointer" }} onClick={() => setDetailOrder(o)}>
                       <td style={styles.td}>#{o.order_number}</td>
@@ -182,6 +194,7 @@ function PedidosContent() {
                           {DELIVERY_STATUS_LABELS[deliveryStatus] || deliveryStatus}
                         </span>
                       </td>
+                      <td style={styles.td}>{dataEntrega ? fmtDate(dataEntrega) : "—"}</td>
                     </tr>
                   );
                 })}
@@ -240,6 +253,7 @@ function PedidosContent() {
               <div style={styles.modalSection}>
                 <span style={styles.modalSectionTitle}>Entrega</span>
                 <p style={styles.modalText}>{DELIVERY_STATUS_LABELS[getDeliveryStatus(detailOrder)]}</p>
+                {getDataEntrega(detailOrder) && <p style={styles.modalTextMuted}>Entregue em {fmtDate(getDataEntrega(detailOrder))}</p>}
                 {(() => {
                   const d = Array.isArray(detailOrder.deliveries) ? detailOrder.deliveries[0] : detailOrder.deliveries;
                   if (!d) return null;
