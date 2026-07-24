@@ -70,6 +70,36 @@ function JuridicoContent() {
   const [anexoArquivo, setAnexoArquivo] = useState(null);
   const [anexoErro, setAnexoErro] = useState("");
 
+  const [politicaTexto, setPoliticaTexto] = useState("");
+  const [politicaLoading, setPoliticaLoading] = useState(true);
+  const [politicaSaving, setPoliticaSaving] = useState(false);
+  const [politicaSalva, setPoliticaSalva] = useState(false);
+
+  async function loadPolitica() {
+    setPoliticaLoading(true);
+    const { data } = await supabase.from("juridico_lgpd_politica").select("*").eq("id", "atual").maybeSingle();
+    setPoliticaTexto(data?.texto || "");
+    setPoliticaLoading(false);
+  }
+
+  useEffect(() => {
+    if (tab === "lgpd") loadPolitica();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tab]);
+
+  async function handleSalvarPolitica() {
+    setPoliticaSaving(true);
+    setPoliticaSalva(false);
+    await supabase.from("juridico_lgpd_politica").upsert({
+      id: "atual",
+      texto: politicaTexto,
+      updated_at: new Date().toISOString(),
+    });
+    setPoliticaSaving(false);
+    setPoliticaSalva(true);
+    setTimeout(() => setPoliticaSalva(false), 3000);
+  }
+
   async function loadAnexos() {
     setAnexosLoading(true);
     const { data } = await supabase.from("juridico_anexos").select("*").order("created_at", { ascending: false });
@@ -634,6 +664,34 @@ function JuridicoContent() {
 
             {tab === "lgpd" && (
               <>
+                <h2 style={styles.sectionTitle}>Política de Privacidade (LGPD)</h2>
+                <p style={styles.explainer}>
+                  <ShieldCheck size={13} style={{ flexShrink: 0, marginTop: 1 }} />
+                  Esse texto aparece publicamente nos dois sites (Minha Loja e Atacarejo), numa página
+                  própria de política de privacidade, linkada no rodapé.
+                </p>
+
+                {politicaLoading ? (
+                  <p style={styles.empty}>Carregando…</p>
+                ) : (
+                  <div style={{ ...styles.form, maxWidth: 720 }}>
+                    <label style={styles.label}>Texto da política</label>
+                    <textarea
+                      value={politicaTexto}
+                      onChange={(e) => setPoliticaTexto(e.target.value)}
+                      style={{ ...styles.input, minHeight: 220, fontFamily: "monospace", fontSize: 12.5 }}
+                      placeholder="Escreva aqui a política de privacidade da empresa, explicando quais dados são coletados, para que são usados, como o cliente pode solicitar acesso/exclusão, etc."
+                    />
+                    <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 12 }}>
+                      <button onClick={handleSalvarPolitica} style={styles.saveButton} disabled={politicaSaving}>
+                        {politicaSaving ? "Salvando…" : "Salvar política"}
+                      </button>
+                      {politicaSalva && <span style={{ fontSize: 12, color: "#16a34a", fontWeight: 600 }}>✓ Salvo com sucesso</span>}
+                    </div>
+                  </div>
+                )}
+
+                <h2 style={{ ...styles.sectionTitle, marginTop: 28 }}>Solicitações de clientes</h2>
                 <p style={styles.explainer}>
                   <ShieldCheck size={13} style={{ flexShrink: 0, marginTop: 1 }} />
                   Solicitações de clientes sobre os próprios dados. O prazo de resposta (15 dias) é calculado automaticamente.
@@ -1059,6 +1117,7 @@ const styles = {
   saveButton: { border: "none", background: "#171717", color: "#fff", borderRadius: 10, padding: "11px 18px", fontWeight: 600, fontSize: 13, cursor: "pointer", marginTop: 16 },
   warnNote: { fontSize: 12, color: "#d97706", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, padding: "9px 12px", marginTop: 10 },
   helperText: { fontSize: 11, color: "#a3a3a3", marginTop: 4 },
+  sectionTitle: { fontSize: 13, fontWeight: 700, color: "#171717", textTransform: "uppercase", letterSpacing: 0.3, marginTop: 8, marginBottom: 4 },
   iconButtonLink: { width: 30, height: 30, borderRadius: 8, border: "1px solid #e5e5e5", background: "#fff", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 },
   linkedTag: { fontSize: 11, fontWeight: 600, background: "#dbeafe", color: "#2563eb", borderRadius: 999, padding: "3px 8px" },
 };
