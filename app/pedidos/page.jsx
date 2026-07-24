@@ -230,7 +230,9 @@ function PedidosContent() {
                 <span style={styles.modalSectionTitle}>Pagamento</span>
                 <p style={styles.modalText}>
                   {detailOrder.payment_method === "cod" ? "Pagar na Entrega" : detailOrder.payment_method}
-                  {detailOrder.delivery_payment_option && ` — ${DELIVERY_PAYMENT_LABELS[detailOrder.delivery_payment_option] || detailOrder.delivery_payment_option}`}
+                  {detailOrder.delivery_payment_options?.length > 0 && (
+                    ` — ${detailOrder.delivery_payment_options.map((id) => DELIVERY_PAYMENT_LABELS[id] || id).join(" + ")}`
+                  )}
                 </p>
                 {detailOrder.coupon_code && <p style={styles.modalTextMuted}>Cupom: {detailOrder.coupon_code} (-{fmtMoney(detailOrder.discount_amount)})</p>}
               </div>
