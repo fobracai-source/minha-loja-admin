@@ -65,6 +65,12 @@ function SacContent() {
   const [showForm, setShowForm] = useState(false);
 
   const [customerName, setCustomerName] = useState("");
+  const [buscaCliente, setBuscaCliente] = useState("");
+  const [resultadosBusca, setResultadosBusca] = useState([]);
+  const [buscandoCliente, setBuscandoCliente] = useState(false);
+  const [clienteSelecionado, setClienteSelecionado] = useState(null);
+  const [pedidosClienteSelecionado, setPedidosClienteSelecionado] = useState([]);
+  const [carregandoPedidosCliente, setCarregandoPedidosCliente] = useState(false);
   const [customerPhone, setCustomerPhone] = useState("");
   const [subject, setSubject] = useState("");
   const [description, setDescription] = useState("");
@@ -120,6 +126,49 @@ function SacContent() {
     loadTickets();
   }, []);
 
+  useEffect(() => {
+    if (!buscaCliente.trim()) {
+      setResultadosBusca([]);
+      return;
+    }
+    setBuscandoCliente(true);
+    const timer = setTimeout(async () => {
+      const { data } = await supabase
+        .from("customers")
+        .select("id, name, phone, email")
+        .ilike("name", `%${buscaCliente.trim()}%`)
+        .limit(6);
+      setResultadosBusca(data || []);
+      setBuscandoCliente(false);
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [buscaCliente]);
+
+  async function handleSelecionarCliente(cliente) {
+    setClienteSelecionado(cliente);
+    setCustomerName(cliente.name);
+    setCustomerPhone(cliente.phone || "");
+    setBuscaCliente("");
+    setResultadosBusca([]);
+
+    setCarregandoPedidosCliente(true);
+    const { data } = await supabase
+      .from("orders")
+      .select("order_number, created_at, total, status, order_items(product_name, quantity)")
+      .eq("customer_id", cliente.id)
+      .order("created_at", { ascending: false })
+      .limit(10);
+    setPedidosClienteSelecionado(data || []);
+    setCarregandoPedidosCliente(false);
+  }
+
+  function handleLimparClienteSelecionado() {
+    setClienteSelecionado(null);
+    setPedidosClienteSelecionado([]);
+    setCustomerName("");
+    setCustomerPhone("");
+  }
+
   async function handleCreate(e) {
     e.preventDefault();
     if (!customerName.trim() || !subject.trim() || !description.trim()) return;
@@ -134,6 +183,7 @@ function SacContent() {
     });
 
     setCustomerName(""); setCustomerPhone(""); setSubject(""); setDescription(""); setPriority("media");
+    handleLimparClienteSelecionado();
     setShowForm(false);
     setSaving(false);
     loadTickets();
@@ -189,6 +239,56 @@ function SacContent() {
 
         {showForm && (
           <form onSubmit={handleCreate} style={styles.form}>
+            <label style={styles.label}>Buscar cliente já cadastrado</label>
+            <div style={{ position: "relative" }}>
+              <input
+                value={buscaCliente}
+                onChange={(e) => setBuscaCliente(e.target.value)}
+                style={styles.input}
+                placeholder="Digite o nome do cliente…"
+              />
+              {(resultadosBusca.length > 0 || buscandoCliente) && (
+                <div style={styles.buscaDropdown}>
+                  {buscandoCliente ? (
+                    <div style={styles.buscaItem}>Buscando…</div>
+                  ) : (
+                    resultadosBusca.map((c) => (
+                      <button key={c.id} type="button" onClick={() => handleSelecionarCliente(c)} style={styles.buscaItemButton}>
+                        <span style={{ fontWeight: 600 }}>{c.name}</span>
+                        <span style={{ fontSize: 11, color: "#a3a3a3" }}>{c.phone}</span>
+                      </button>
+                    ))
+                  )}
+                </div>
+              )}
+            </div>
+
+            {clienteSelecionado && (
+              <div style={styles.clienteSelecionadoBox}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 700, fontSize: 12.5 }}>✓ {clienteSelecionado.name}</span>
+                  <button type="button" onClick={handleLimparClienteSelecionado} style={styles.limparButton}>Trocar</button>
+                </div>
+                <div style={{ marginTop: 8 }}>
+                  <span style={{ fontSize: 10.5, fontWeight: 700, color: "#525252", textTransform: "uppercase" }}>Histórico de pedidos</span>
+                  {carregandoPedidosCliente ? (
+                    <p style={{ fontSize: 11.5, color: "#a3a3a3", marginTop: 4 }}>Carregando…</p>
+                  ) : pedidosClienteSelecionado.length === 0 ? (
+                    <p style={{ fontSize: 11.5, color: "#a3a3a3", marginTop: 4 }}>Nenhum pedido ainda.</p>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4, marginTop: 4 }}>
+                      {pedidosClienteSelecionado.map((p) => (
+                        <div key={p.order_number} style={styles.pedidoPreviewRow}>
+                          <span>#{p.order_number} · {new Date(p.created_at).toLocaleDateString("pt-BR")} · {(p.order_items || []).length} item(ns)</span>
+                          <span style={{ fontWeight: 700 }}>{fmtMoney(p.total)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             <div style={styles.row}>
               <div style={{ flex: 1 }}>
                 <label style={styles.label}>Nome do cliente *</label>
@@ -363,6 +463,24 @@ const styles = {
   profileAddress: { display: "flex", alignItems: "center", gap: 4, fontSize: 11, color: "#3b5998", marginTop: 4 },
   description: { fontSize: 13, color: "#525252", marginBottom: 12, lineHeight: 1.5 },
   responseLabel: { fontSize: 11, fontWeight: 600, color: "#525252", display: "block", marginBottom: 4 },
+  buscaDropdown: {
+    position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 20,
+    background: "#fff", border: "1px solid #e5e5e5", borderRadius: 10,
+    boxShadow: "0 4px 12px rgba(0,0,0,0.08)", overflow: "hidden", maxHeight: 220, overflowY: "auto",
+  },
+  buscaItem: { padding: "10px 12px", fontSize: 12, color: "#a3a3a3" },
+  buscaItemButton: {
+    display: "flex", flexDirection: "column", gap: 1, width: "100%", textAlign: "left",
+    padding: "9px 12px", background: "none", border: "none", borderBottom: "1px solid #f5f5f5", cursor: "pointer",
+  },
+  clienteSelecionadoBox: {
+    background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 10, padding: "10px 12px", marginTop: 10,
+  },
+  limparButton: {
+    border: "1px solid #bfdbfe", background: "#fff", borderRadius: 8, padding: "4px 10px",
+    fontSize: 11, fontWeight: 600, cursor: "pointer", color: "#2563eb",
+  },
+  pedidoPreviewRow: { display: "flex", justifyContent: "space-between", fontSize: 11.5, color: "#1e3a8a" },
   responseInput: {
     border: "1px solid #e5e5e5", borderRadius: 10, padding: "9px 12px", fontSize: 12,
     width: "100%", minHeight: 60, resize: "vertical", outline: "none",
